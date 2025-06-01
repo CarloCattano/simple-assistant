@@ -1,6 +1,6 @@
 import os
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import Update
 from telegram.ext import ContextTypes
 from telegramify_markdown import markdownify
 
@@ -9,6 +9,8 @@ from services.tts import synthesize_speech
 
 from services.stt import transcribe
 from utils.logger import log_user_action
+
+from utils.logger import logger
 
 async def send_chunked_message(target, text: str, parse_mode='MarkdownV2', chunk_size=4096):
     """
@@ -26,57 +28,63 @@ async def send_chunked_message(target, text: str, parse_mode='MarkdownV2', chunk
             await target.reply_text(text=chunk, parse_mode=parse_mode)
     else:
         await target.reply_text(text=text, parse_mode=parse_mode)
+# utility function to send voice with fallback and cleanup
+async def send_voice_reply(update_message, filename, caption):
+    try:
+        with open(filename, "rb") as f:
+            await update_message.reply_voice(voice=f, caption=caption)
+    except Exception as e:
+        logger.error(f"Error sending file: {e}")
+        await update_message.reply_text("Couldn't send the audio.")
+    finally:
+        os.remove(filename)
 
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message:
-        return
-
-    user_text = update.message.text
-
-    log_user_action("text_message", update, user_text)
-    
+async def respond_in_mode(update_message, context, user_input, ai_output):
     mode = context.user_data.get('mode', 'text')
-    mess = await update.message.reply_text(text=f"Asking Ai God's...")
+
     if mode == "text":
-        # keep track of message to delete later 
-        generated_content = markdownify(generate_content(user_text))
-
-        await mess.delete()
-        await send_chunked_message(update.message, generated_content)
-
+        reply = markdownify(ai_output)
+        await send_chunked_message(update_message, reply)
     elif mode == "audio":
-        generated_content = generate_content(user_text)
-        generated_content = generated_content.replace("*", "").replace("\n", " ").strip()
+        if len(ai_output) > 4096:
+            ai_output = ai_output[:4096]
+            # inform the user about the clipping of the prompt due to limits
+            await update_message.reply_text("The generated content was too long and has been clipped to fit the limit.")
 
-        if len(generated_content) > 4096:
-            generated_content = generated_content[:4096]
-        
-        filename = await synthesize_speech(generated_content)
-        
-        await mess.delete()
+        filename = await synthesize_speech(ai_output.replace("*", "").replace("\n", " ").strip())
 
         if filename:
-            try:
-                with open(filename, "rb") as f:
-                    await update.message.reply_voice(voice=f, caption=f"{user_text}")
-            except Exception as e:
-                logger.error(f"Error sending file: {e}")
-                await update.message.reply_text("Couldn't send the audio.")
-            finally:
-              os.remove(filename)
-
+            await send_voice_reply(update_message, filename, caption=user_input)
         else:
-            await update.message.reply_text(text="Content generation failed.")
+            await update_message.reply_text("Content generation failed.")
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_text = update.message.text
+
+    if not user_text:
+        await update.message.reply_text("Please send a valid text message.")
+        return
+
+    log_user_action("text_message", update, user_text)
+
+    mess = await update.message.reply_text("Asking Ai God's...")
+    generated_content = generate_content(user_text)
+
+    await respond_in_mode(update.message, context, user_text, generated_content)
+    await mess.delete()
 
 async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file = await update.message.voice.get_file()
     await file.download_to_drive("voice_message.ogg")
-    await update.message.reply_text("Voice message received and saved.")
-    
+    mess = await update.message.reply_text("Voice message received and saved.")
+
     transcription = await transcribe("voice_message.ogg")
     text = transcription['candidates'][0]['content']['parts'][0]['text'].strip()
-    await update.message.reply_text(f"Transcription: {text}")
+    await mess.delete()
 
+    mess = await update.message.reply_text(f"Transcription: {text}")
     reply = generate_content(text)
-    await update.message.reply_text(f"{markdownify(reply)}", parse_mode="Markdownv2")
+    await mess.delete()
+
+    await respond_in_mode(update.message, context, text, reply)
+

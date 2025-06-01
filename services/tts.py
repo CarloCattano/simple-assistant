@@ -32,7 +32,7 @@ async def synthesize_speech(text: str, output_filename: str = None):
 
     body = {
         "input": {"text": text},
-        "voice": {"languageCode": "en-US", "name": "Kore"},
+        "voice": {"languageCode": "en-US", "name": "Zephyr"},
         "audioConfig": {"audioEncoding": "OGG_OPUS"}
     }
 

@@ -1,5 +1,6 @@
 *.mp3
 *.mp3
+*.ogg
 *.off
 *.json
 __pycache__

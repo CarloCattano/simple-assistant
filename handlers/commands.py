@@ -12,7 +12,7 @@ from utils.logger import log_user_action
 
 from telegramify_markdown import markdownify
 
-from telegram import ReplyKeyboardMarkup, Update
+from telegram import Update
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 
 logger = __import__('logging').getLogger(__name__)
@@ -59,6 +59,12 @@ async def handle_tts_request(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user_message = context.user_data.get("pending_transcript")
 
     if query.data == 'send_audio_tts' and user_message:
+
+        # trim message and inform user if too long
+        if len(user_message) > 4096:
+            await query.message.reply_text("Message too long, please limit to 4096 characters.")
+            return
+
         filename = await synthesize_speech(user_message)
 
         if filename:

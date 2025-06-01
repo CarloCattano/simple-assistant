@@ -1,0 +1,7 @@
+2025-06-01 13:23:49,360 - [92m
+User: 6661376010 - @N/A (Racccn0) 
+ Action: text_message 
+ ========== 
+ | Detail: hello there . Between the three methods, the configurable options differ in availability, their name and the method in which they are specified. This page only explains the second method (kernel command line parameters) and shows a list of the most used kernel parameters in Arch Linux.
+
+Most parameters are associated with subsystems and work only if the kernel is configured with those subsystems built in. They also depend on the presence of the hardware they are associated with.[0m

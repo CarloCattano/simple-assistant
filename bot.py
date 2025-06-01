@@ -4,8 +4,17 @@ from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
                           MessageHandler, filters)
 
 from config import TELEGRAM_TOKEN
-from handlers.callbacks import button
-from handlers.commands import help_command, start
+from handlers.commands import (
+    handle_tts_request,
+    help_command,
+    start, clear_user_history,
+    set_audio_mode,
+    set_text_mode,
+    transcribe_text,
+    handle_prompt_decision,
+    handle_tts_request,
+)
+
 from handlers.messages import handle_message, voice_handler
 
 logging.basicConfig(level=logging.WARNING)
@@ -15,11 +24,16 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("clear", clear_user_history))
+    app.add_handler(CommandHandler("audio", set_audio_mode))
+    app.add_handler(CommandHandler("text", set_text_mode))
 
+    app.add_handler(CallbackQueryHandler(handle_tts_request, pattern="^send_audio_tts$"))
+    app.add_handler(CallbackQueryHandler(handle_prompt_decision, pattern="^(send_prompt|cancel)$"))
+
+    app.add_handler(MessageHandler(filters.TEXT & filters.FORWARDED, transcribe_text))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.VOICE, voice_handler))
-    
-    app.add_handler(CallbackQueryHandler(button))
 
     app.run_polling(allowed_updates=None)
 

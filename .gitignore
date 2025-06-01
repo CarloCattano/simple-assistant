@@ -1,3 +1,7 @@
+*.mp3
+*.mp3
+*.off
+*.json
 __pycache__
 .cache
 venv

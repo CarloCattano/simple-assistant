@@ -1,196 +1,105 @@
-
-2025-06-01 13:52:40,906 - [92m
-User: 6661376010 - @N/A (Racccn0) 
- Action: User used /start 
- ========== 
- | Detail: User(first_name='Racccn0', id=6661376010, is_bot=False, language_code='en')[0m
-2025-06-01 14:03:35,282 - [92m
+2025-06-01 17:01:23,798 - [92m
 User: 6661376010 - @N/A (Racccn0) 
  Action: text_message 
  ========== 
- | Detail: /ask what are your model capabilities  ? list them using markdownv2 for telegram[0m
-2025-06-01 14:03:54,912 - [92m
-User: 6661376010 - @N/A (Racccn0) 
- Action: User used /start 
- ========== 
- | Detail: User(first_name='Racccn0', id=6661376010, is_bot=False, language_code='en')[0m
-2025-06-01 14:05:55,553 - [92m
-User: 6661376010 - @N/A (Racccn0) 
- Action: User used /start 
- ========== 
- | Detail: User(first_name='Racccn0', id=6661376010, is_bot=False, language_code='en')[0m
-2025-06-01 14:06:49,588 - [92m
+ | Detail: tell me a long story about siddarta but he is a recent software engenier graduate looking for his true englighment job and misticism[0m
+2025-06-01 17:02:24,793 - [92m
 User: 6661376010 - @N/A (Racccn0) 
  Action: text_message 
  ========== 
- | Detail: egeg[0m
-2025-06-01 14:07:09,249 - [92m
+ | Detail: tell me a long story about siddarta but he is a recent software engenier graduate looking for his true englighment job and misticism ( Max 5000 chars )[0m
+2025-06-01 17:06:31,808 - [92m
 User: 6661376010 - @N/A (Racccn0) 
  Action: text_message 
  ========== 
- | Detail: aeeagg[0m
-2025-06-01 14:10:49,371 - [92m
-User: 6661376010 - @N/A (Racccn0) 
- Action: text_message 
- ========== 
- | Detail: hello world[0m
-2025-06-01 14:11:21,368 - [92m
-User: 6661376010 - @N/A (Racccn0) 
- Action: text_message 
- ========== 
- | Detail: hello world[0m
-2025-06-01 14:11:35,495 - [92m
-User: 6661376010 - @N/A (Racccn0) 
- Action: text_message 
- ========== 
- | Detail: how are you doing otday ?[0m
-2025-06-01 14:12:26,290 - [92m
-User: 6661376010 - @N/A (Racccn0) 
- Action: text_message 
- ========== 
- | Detail: hello[0m
-2025-06-01 14:12:50,248 - [92m
-User: 6661376010 - @N/A (Racccn0) 
- Action: text_message 
- ========== 
- | Detail: llll[0m
-2025-06-01 14:14:35,209 - [92m
-User: 6661376010 - @N/A (Racccn0) 
- Action: text_message 
- ========== 
- | Detail: hello world[0m
-2025-06-01 14:23:30,350 - [92m
-User: 6661376010 - @N/A (Racccn0) 
- Action: text_message 
- ========== 
- | Detail: hello world[0m
-2025-06-01 14:23:40,999 - [92m
-User: 6661376010 - @N/A (Racccn0) 
- Action: text_message 
- ========== 
- | Detail: hi there[0m
-2025-06-01 14:24:33,325 - [92m
-User: 6661376010 - @N/A (Racccn0) 
- Action: text_message 
- ========== 
- | Detail: hello[0m
-2025-06-01 14:24:41,210 - [92m
-User: 6661376010 - @N/A (Racccn0) 
- Action: text_message 
- ========== 
- | Detail: hi master[0m
-2025-06-01 14:28:31,134 - [92m
-User: 6661376010 - @N/A (Racccn0) 
- Action: text_message 
- ========== 
- | Detail: hello world in assembly[0m
-2025-06-01 14:31:52,516 - [92m
-User: 6661376010 - @N/A (Racccn0) 
- Action: text_message 
- ========== 
- | Detail: hello worl din assembly  wiht commentaries and explanations[0m
-2025-06-01 14:33:15,468 - [92m
-User: 6661376010 - @N/A (Racccn0) 
- Action: text_message 
- ========== 
- | Detail: hello world[0m
-2025-06-01 14:33:20,483 - [92m
-User: 6661376010 - @N/A (Racccn0) 
- Action: text_message 
- ========== 
- | Detail: Yes[0m
-2025-06-01 14:35:14,095 - [92m
+ | Detail: tell me a story in markdown v2 about a siddartha of coding[0m
+2025-06-01 17:15:22,238 - [92m
 User: 6661376010 - @N/A (Racccn0) 
  Action: text_message 
  ========== 
  | Detail: hello there[0m
-2025-06-01 14:35:18,293 - [92m
+2025-06-01 17:15:38,026 - [92m
 User: 6661376010 - @N/A (Racccn0) 
  Action: text_message 
  ========== 
- | Detail: Yes[0m
-2025-06-01 14:36:00,492 - [92m
+ | Detail: User entered: ModuleNotFoundError: No module named 'requests'[0m
+2025-06-01 17:17:06,544 - [92m
 User: 6661376010 - @N/A (Racccn0) 
  Action: text_message 
  ========== 
- | Detail: helo ma fren[0m
-2025-06-01 14:36:05,247 - [92m
-User: 6661376010 - @N/A (Racccn0) 
- Action: text_message 
- ========== 
- | Detail: Yes[0m
-2025-06-01 14:41:03,344 - [92m
+ | Detail: hello there[0m
+2025-06-01 18:12:33,977 - [92m
 User: 6661376010 - @N/A (Racccn0) 
  Action: text_message 
  ========== 
  | Detail: hello world[0m
-2025-06-01 14:41:48,922 - [92m
+2025-06-01 18:13:31,728 - [92m
 User: 6661376010 - @N/A (Racccn0) 
  Action: text_message 
  ========== 
- | Detail: how much money will it cost me to use gemini to get text input and google voice tts to voice it like now  ? how can one estimate this  ??!!![0m
-2025-06-01 14:42:25,073 - [92m
-User: 6661376010 - @N/A (Racccn0) 
- Action: text_message 
- ========== 
- | Detail: how much money will it cost me to use gemini to get text input and google voice tts to voice it like now  ? how can one estimate this  ??!!! ( keep it short under 5000 chars)[0m
-2025-06-01 14:44:09,332 - [92m
-User: 6661376010 - @N/A (Racccn0) 
- Action: text_message 
- ========== 
- | Detail: how much money will it cost me to use gemini to get text input and google voice tts to voice it like now  ? how can one estimate this  ??!!! ( keep it short under 500 chars)[0m
-2025-06-01 14:45:32,490 - [92m
-User: 6661376010 - @N/A (Racccn0) 
- Action: text_message 
- ========== 
- | Detail: ways to optimize cost for gemini and google api products, discounts for students etc ( 500 chars about)[0m
-2025-06-01 14:46:18,290 - [92m
-User: 6661376010 - @N/A (Racccn0) 
- Action: text_message 
- ========== 
- | Detail: ways to optimize cost for gemini and google api products, discounts for students etc ( talk for 2000 chars at last)[0m
-2025-06-01 14:48:56,386 - [92m
-User: 6661376010 - @N/A (Racccn0) 
- Action: text_message 
- ========== 
- | Detail: ways to optimize cost for gemini and google api products, discounts for students etc ( talk for 2000 chars at last)[0m
-2025-06-01 14:51:20,420 - [92m
-User: 6661376010 - @N/A (Racccn0) 
- Action: text_message 
- ========== 
- | Detail: how to fly[0m
-2025-06-01 14:51:59,767 - [92m
-User: 6661376010 - @N/A (Racccn0) 
- Action: text_message 
- ========== 
- | Detail: how to fly[0m
-2025-06-01 14:53:19,775 - [92m
-User: 6661376010 - @N/A (Racccn0) 
- Action: text_message 
- ========== 
- | Detail: hello how ot fly[0m
-2025-06-01 14:56:29,028 - [92m
+ | Detail: output all the memory db[0m
+2025-06-01 18:19:38,333 - [92m
 User: 6661376010 - @N/A (Racccn0) 
  Action: text_message 
  ========== 
  | Detail: hello world[0m
-2025-06-01 14:56:41,732 - [92m
+2025-06-01 18:20:48,182 - [92m
 User: 6661376010 - @N/A (Racccn0) 
  Action: text_message 
  ========== 
- | Detail: how to fly ? (test markdownv2 syntax please )[0m
-2025-06-01 14:59:14,281 - [92m
+ | Detail: hello worl d[0m
+2025-06-01 18:21:12,108 - [92m
 User: 6661376010 - @N/A (Racccn0) 
  Action: text_message 
  ========== 
- | Detail: how to fly ? max 42 words[0m
-2025-06-01 14:59:42,900 - [92m
+ | Detail: do you know the whasaaaaaa meme ? can you say wasaaaaaaaaaaaaaa[0m
+2025-06-01 18:21:52,467 - [92m
 User: 6661376010 - @N/A (Racccn0) 
  Action: text_message 
  ========== 
- | Detail: how to fly ? max 42 words[0m
-2025-06-01 15:09:42,547 - [92m
+ | Detail: no ,  they say like what's up but super extended[0m
+2025-06-01 18:23:06,589 - [92m
 User: 6661376010 - @N/A (Racccn0) 
  Action: text_message 
  ========== 
- | Detail: whats a good thing about sparragis[0m
+ | Detail: how would you be like to be called if I may adress you ?[0m
+2025-06-01 18:24:00,040 - [92m
+User: 6661376010 - @N/A (Racccn0) 
+ Action: text_message 
+ ========== 
+ | Detail: you choose a name bud[0m
+2025-06-01 18:24:36,289 - [92m
+User: 6661376010 - @N/A (Racccn0) 
+ Action: text_message 
+ ========== 
+ | Detail: hey lumena[0m
+2025-06-01 18:24:44,892 - [92m
+User: 6661376010 - @N/A (Racccn0) 
+ Action: text_message 
+ ========== 
+ | Detail: do you remember our prev conversations ?[0m
+2025-06-01 18:25:08,852 - [92m
+User: 6661376010 - @N/A (Racccn0) 
+ Action: text_message 
+ ========== 
+ | Detail: I have a friend Melissa that has very green eyes[0m
+2025-06-01 18:25:43,667 - [92m
+User: 6661376010 - @N/A (Racccn0) 
+ Action: text_message 
+ ========== 
+ | Detail: do you know mellisa my friend ? what colors are her eyes?[0m
+2025-06-01 18:25:50,220 - [92m
+User: 6661376010 - @N/A (Racccn0) 
+ Action: text_message 
+ ========== 
+ | Detail: yes[0m
+2025-06-01 18:26:05,580 - [92m
+User: 6661376010 - @N/A (Racccn0) 
+ Action: text_message 
+ ========== 
+ | Detail: im amazed by ollama[0m
+2025-06-01 18:26:37,905 - [92m
+User: 6661376010 - @N/A (Racccn0) 
+ Action: text_message 
+ ========== 
+ | Detail: give me the full command to add all changed files, commit and push[0m

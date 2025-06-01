@@ -16,19 +16,10 @@ def clean_text_for_tts(text: str) -> str:
     # Unescape HTML (optional, in case response has &quot; etc.)
     text = html.unescape(text)
 
-    # Remove markdown characters (*, _, ~, `, > etc.)
     text = re.sub(r"[*_~`>#\-]", "", text)
-
-    # Remove emojis and non-ASCII (optional)
     text = re.sub(r"[^\x00-\x7F]+", "", text)
-
-    # Replace newlines/tabs with space
     text = text.replace("\n", " ").replace("\r", " ").replace("\t", " ")
-
-    # Collapse multiple spaces into one
     text = re.sub(r"\s+", " ", text)
-
-    # Trim spaces
     text = text.strip()
 
 async def synthesize_speech(text: str, output_filename: str = None):

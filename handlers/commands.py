@@ -1,19 +1,17 @@
 import os
-from telegram import ForceReply, Update
+
+from telegram import (ForceReply, InlineKeyboardButton, InlineKeyboardMarkup,
+                      Update)
 from telegram.ext import ContextTypes
-
-from services.ollama import clear_history
-from services.tts import synthesize_speech
-
-from services.generate import generate_content
-from handlers.messages import send_chunked_message
-
-from utils.logger import log_user_action
-
 from telegramify_markdown import markdownify
 
-from telegram import Update
-from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+from config import LLM_PROVIDER
+from handlers.messages import send_chunked_message
+from services.gemini import clear_conversations, handle_user_message
+from services.generate import generate_content
+from services.ollama import clear_history
+from services.tts import synthesize_speech
+from utils.logger import log_user_action
 
 logger = __import__('logging').getLogger(__name__)
 
@@ -31,6 +29,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Please choose your mode:\nType /audio for Audio mode or /text for Text mode."
     )
+
 
 async def transcribe_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     incoming_message = update.message.text
@@ -99,7 +98,10 @@ async def handle_prompt_decision(update: Update, context: ContextTypes.DEFAULT_T
     if query.data == 'send_prompt':
         if prompt:
             await query.edit_message_text("Sending prompt...")
-            generated_content = markdownify(generate_content(prompt)) 
+            
+            generated_content = markdownify(
+                handle_user_message(query.from_user.id, prompt)
+            )
 
             await send_chunked_message(query.message, generated_content)
 
@@ -122,5 +124,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Help!")
 
 async def clear_user_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.warn(f"Clearing history for {update.effective_sender.username}")
-    clear_history()
+    logger.warn(f"Clearing history for {update.effective_user}")
+
+    if (LLM_PROVIDER == 'ollama'):
+        clear_history()
+    elif (LLM_PROVIDER == 'gemini'):
+        clear_conversations(update.effective_user)

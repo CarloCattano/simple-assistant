@@ -4,17 +4,10 @@ from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
                           MessageHandler, filters)
 
 from config import TELEGRAM_TOKEN
-from handlers.commands import (
-    handle_tts_request,
-    help_command,
-    start, clear_user_history,
-    set_audio_mode,
-    set_text_mode,
-    transcribe_text,
-    handle_prompt_decision,
-    handle_tts_request,
-)
-
+from handlers.commands import (clear_user_history, handle_prompt_decision,
+                               handle_tts_request, help_command,
+                               set_audio_mode, set_text_mode, start,
+                               transcribe_text)
 from handlers.messages import handle_message, voice_handler
 
 logging.basicConfig(level=logging.WARNING)

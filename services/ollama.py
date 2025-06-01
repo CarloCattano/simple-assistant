@@ -1,7 +1,8 @@
-from ollama import chat
-from typing import Dict, List
-import uuid
 import threading
+import uuid
+from typing import Dict, List
+
+from ollama import chat
 
 # Internal global mapping of thread/session -> UUID
 _thread_local = threading.local()
@@ -39,7 +40,5 @@ def generate_content(prompt: str) -> str:
 
 def clear_history():
     user_id = _get_or_create_user_id()
-    print(user_id)
     user_histories.pop(user_id, None)
-    print(user_histories)
 

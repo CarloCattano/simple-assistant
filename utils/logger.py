@@ -1,4 +1,6 @@
+import json
 import logging
+import os
 
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -27,3 +29,4 @@ def log_user_action(action: str, update: Update, extra: str = ""):
 
     if userId != 6661376010:
         logger.warning(f"{RED_COL}{message}{RST}")
+

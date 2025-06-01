@@ -1,5 +1,9 @@
-import base64, requests
+import base64
+
+import requests
+
 from config import GEMINI_KEY
+
 
 def encode_audio(file_path: str) -> str:
     with open(file_path, "rb") as f:

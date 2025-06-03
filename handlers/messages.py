@@ -14,15 +14,6 @@ from utils.logger import log_user_action, logger
 
 
 async def send_chunked_message(target, text: str, parse_mode='MarkdownV2', chunk_size=4096):
-    """
-    Sends a message in chunks if it exceeds Telegram's message length limit.
-
-    Args:
-        target: The telegram object to call `.reply_text()` on. Can be `update.message`, `query.message`, etc.
-        text (str): The message text to send.
-        parse_mode (str): Telegram parse mode (e.g., 'MarkdownV2', 'HTML').
-        chunk_size (int): Maximum size per chunk. Default is 4096 (Telegram's hard limit).
-    """
     if len(text) > chunk_size:
         chunks = [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
         for chunk in chunks:

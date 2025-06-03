@@ -11,6 +11,21 @@ _thread_local = threading.local()
 user_histories: Dict[str, List[Dict[str, str]]] = {}
 
 MODEL_NAME = "llama3.2"
+#"deepseek-r1:1.5b"  # 
+
+# filter out the deepseek thinking output in a string
+# <think>...</think>
+def filter_thinking_output(text: str) -> str:
+    start_tag = "<think>"
+    end_tag = "</think>"
+    
+    start_index = text.find(start_tag)
+    end_index = text.find(end_tag, start_index + len(start_tag))
+    
+    if start_index != -1 and end_index != -1:
+        return text[:start_index] + text[end_index + len(end_tag):]
+    
+    return text
 
 def _get_or_create_user_id() -> str:
     if not hasattr(_thread_local, "user_id"):
@@ -27,10 +42,12 @@ def generate_content(prompt: str) -> str:
     try:
         response = chat(
             model=MODEL_NAME,
-            messages=history
+            messages=history,
+            keep_alive=0,
         )
 
-        reply = response.message.content
+        reply = filter_thinking_output(response.message.content)
+
         history.append({'role': 'assistant', 'content': reply})
     
         return reply

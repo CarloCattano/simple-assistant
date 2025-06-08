@@ -13,6 +13,9 @@ client = Client(
 )
 
 def search_and_scrape(url):
+    if not url.startswith(('http://', 'https://')):
+        url = 'https://' + url
+
     response = client.get(url)
 
     if response.status_code != 200:

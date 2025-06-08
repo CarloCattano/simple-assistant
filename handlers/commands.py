@@ -5,7 +5,7 @@ from telegram import (ForceReply, InlineKeyboardButton, InlineKeyboardMarkup,
 from telegram.ext import ContextTypes
 from telegramify_markdown import markdownify
 
-from config import LLM_PROVIDER
+from config import LLM_PROVIDER, ADMIN_ID
 from handlers.messages import send_chunked_message
 from services.gemini import clear_conversations, handle_user_message
 from services.generate import generate_content
@@ -17,10 +17,18 @@ logger = __import__('logging').getLogger(__name__)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    await update.message.reply_markdown(
-        f"Hi {user.name}! \n *THIS* is an _experimental_ private bot, please do not use *it*!",
-        reply_markup=ForceReply(selective=True),
-    )
+
+
+    if user.id == int(ADMIN_ID):
+        await update.message.reply_markdown(
+            f"Welcome back, sir {user.name}! \n !",
+            reply_markup=ForceReply(selective=True),
+        )
+    else:
+        await update.message.reply_markdown(
+            f"Hi {user.name}! \n *THIS* is an _experimental_ private bot, please do not use *it*!",
+            reply_markup=ForceReply(selective=True),
+        )
 
     log_user_action("User used /start", update, user)
 
@@ -58,7 +66,6 @@ async def handle_tts_request(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     if query.data == 'send_audio_tts' and user_message:
 
-        # trim message and inform user if too long
         if len(user_message) > 4096:
             await query.message.reply_text("Message too long, please limit to 4096 characters.")
             return
@@ -81,11 +88,8 @@ async def handle_tts_request(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await query.message.reply_text("Audio generation failed.")
 
 
-        # remove a message skiping one from the bot to remove the button 
         await query.message.delete()
 
-
-        # Ask the user to use the transcibed text as a prompt
         await query.message.reply_text(
             "Do you want to send this text as a prompt?",
             reply_markup=InlineKeyboardMarkup([
@@ -115,8 +119,6 @@ async def handle_prompt_decision(update: Update, context: ContextTypes.DEFAULT_T
         else:
             await query.edit_message_text("No prompt to send.")
     
-        # await query.delete()
-
     elif query.data == 'cancel':
         if 'pending_transcript' in context.user_data:
             del context.user_data['pending_transcript']

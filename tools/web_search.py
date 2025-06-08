@@ -22,24 +22,14 @@ def web_search(query):
 
     sel = Selector(text=response.text)
 
-     # Remove the entire <select name="kl"> element which contains the country/region options
     for select_node in sel.xpath('//select[@name="kl"]'):
-        # Using .root to get lxml element and remove it from its parent
         parent = select_node.root.getparent()
         if parent is not None:
             parent.remove(select_node.root)
 
-    # get all body contents    
-    # body_text_parts = sel.xpath('//body//text()').getall()
-    # body_text = ' '.join(t.strip() for t in body_text_parts if t.strip())
-
     body_text_parts = sel.xpath('//body//text()').getall()
-    # for each text inside a tag separate by new line
-    print(response.text)
 
-    # print only class="result__snippet" 
     body_text = ' '.join(t.strip() for t in body_text_parts if t.strip() and 'result__snippet' or 'result__url' in t)
-
 
     links = []
     for link in sel.xpath('//a/@href').getall():

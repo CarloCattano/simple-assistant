@@ -3,9 +3,7 @@ import uuid
 from typing import Dict, List
 
 from ollama import chat
-
 from tools import load_tools
-
 
 # Internal global mapping of thread/session -> UUID
 _thread_local = threading.local()
@@ -18,10 +16,13 @@ MODEL_NAME = "llama3.2"
 
 available_functions = load_tools()
 
+TOOL_MODE = False
+
 TOOL_ENABLE_TRIGGERS = ["tool", "use tools", "tools"]
 
 def should_use_tools(prompt: str) -> bool:
     lower_prompt = prompt.lower()
+
 
     if not any(trigger in lower_prompt for trigger in TOOL_ENABLE_TRIGGERS):
         return False
@@ -31,6 +32,9 @@ def should_use_tools(prompt: str) -> bool:
             if trigger in lower_prompt:
                 return True
 
+    if TOOL_MODE:
+        return True
+    
     return False
 
 # filter out the deepseek thinking output in a string
@@ -60,7 +64,6 @@ def generate_content(prompt: str) -> str:
     history.append({'role': 'user', 'content': prompt})
 
     try:
-        # Simple check: use tools only when explicitly requested
         use_tools = should_use_tools(prompt)
 
         response = chat(
@@ -75,7 +78,7 @@ def generate_content(prompt: str) -> str:
                 func_entry = available_functions.get(tool.function.name)
                 if func_entry:
                     output = func_entry['function'](**tool.function.arguments)
-                    output = f"{tool.function.name} Result: {output}"
+                    output = f"{tool.function.name}: \n{output}"
                     history.append({'role': 'assistant', 'content': output})
                     return output
                 else:

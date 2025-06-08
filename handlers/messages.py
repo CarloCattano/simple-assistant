@@ -49,6 +49,7 @@ async def respond_in_mode(update_message, context, user_input, ai_output):
             await send_voice_reply(update_message, filename, caption=user_input)
         else:
             await update_message.reply_text("Content generation failed.")
+        
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text

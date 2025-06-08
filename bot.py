@@ -26,7 +26,9 @@ def main():
 
     app.add_handler(MessageHandler(filters.TEXT & filters.FORWARDED, transcribe_text))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
     app.add_handler(MessageHandler(filters.VOICE, voice_handler))
+    
 
     app.run_polling(allowed_updates=None)
 

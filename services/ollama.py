@@ -11,7 +11,44 @@ _thread_local = threading.local()
 user_histories: Dict[str, List[Dict[str, str]]] = {}
 
 MODEL_NAME = "llama3.2"
-#"deepseek-r1:1.5b"  # 
+#"deepseek-r1:1.5b"
+
+
+# TOOL TEST
+def add_two_numbers(a: int, b: int) -> int:
+    return a + b
+
+def square_root(a: float) -> float:
+    return float(a) ** 0.5 
+
+
+available_functions = {
+    'add_two_numbers': {
+        'function': add_two_numbers,
+        'triggers': ['add', 'sum', 'plus'],
+    },
+    'square_root': {
+        'function': square_root,
+        'triggers': ['square root', 'sqrt', 'root'],
+    }
+}
+
+
+
+TOOL_ENABLE_TRIGGERS = ["tool", "use tools", "/tool"]
+
+def should_use_tools(prompt: str) -> bool:
+    lower_prompt = prompt.lower()
+
+    if not any(trigger in lower_prompt for trigger in TOOL_ENABLE_TRIGGERS):
+        return False
+
+    for tool in available_functions.values():
+        for trigger in tool['triggers']:
+            if trigger in lower_prompt:
+                return True
+
+    return False
 
 # filter out the deepseek thinking output in a string
 # <think>...</think>
@@ -40,20 +77,35 @@ def generate_content(prompt: str) -> str:
     history.append({'role': 'user', 'content': prompt})
 
     try:
+        # Simple check: use tools only when explicitly requested
+        use_tools = should_use_tools(prompt)
+
         response = chat(
             model=MODEL_NAME,
             messages=history,
             keep_alive=0,
+            tools=[entry['function'] for entry in available_functions.values()] if use_tools else []
         )
 
-        reply = filter_thinking_output(response.message.content)
+        if response.message.tool_calls:
+            for tool in response.message.tool_calls:
+                func_entry = available_functions.get(tool.function.name)
+                if func_entry:
+                    output = func_entry['function'](**tool.function.arguments)
+                    output = f"{tool.function.name} Result: {output}"
+                    history.append({'role': 'assistant', 'content': output})
+                    return output
+                else:
+                    print(f"Function {tool.function.name} not found")
 
+
+        reply = filter_thinking_output(response.message.content)
         history.append({'role': 'assistant', 'content': reply})
-    
         return reply
 
     except Exception as e:
-        return f"Error calling Olama API: {e}"
+        return f"Error calling Ollama API: {e}"
+
 
 def clear_history():
     user_id = _get_or_create_user_id()

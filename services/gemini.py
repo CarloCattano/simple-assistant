@@ -13,9 +13,9 @@ API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-f
 CONVERSATION_FILE = "user_conversations.json"
 
 def save_conversations():
-    # if logs grow bigger than 20 elements, pop the odest out
+    # if logs grow bigger than 40 elements, pop the odest out
     global user_conversations
-    if len(user_conversations) > 20:
+    if len(user_conversations) > 40:
         print(f"{RED_COL}Trimming logs{RST} ")
         keys_to_remove = list(user_conversations.keys())[:len(user_conversations) - 20]
         for key in keys_to_remove:

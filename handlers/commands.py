@@ -71,15 +71,22 @@ async def handle_tts_request(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 with open(filename, "rb") as f:
                     caption_text = f"Transcribed text: {user_message}"
                     await query.message.reply_voice(voice=f, caption=caption_text)
+
             except Exception as e:
                 logger.error(f"Error sending file: {e}")
                 await query.message.reply_text("Couldn't send the audio.")
             finally:
                 os.remove(filename)
+
         else:
             await query.message.reply_text("Audio generation failed.")
 
-        # Prompt the user to use the same text as an LLM prompt
+
+        # remove a message skiping one from the bot to remove the button 
+        await query.message.delete()
+
+
+        # Ask the user to use the transcibed text as a prompt
         await query.message.reply_text(
             "Do you want to send this text as a prompt?",
             reply_markup=InlineKeyboardMarkup([
@@ -87,6 +94,7 @@ async def handle_tts_request(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 [InlineKeyboardButton("No", callback_data='cancel')]
             ])
         )
+        
 
 
 async def handle_prompt_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -108,6 +116,8 @@ async def handle_prompt_decision(update: Update, context: ContextTypes.DEFAULT_T
         else:
             await query.edit_message_text("No prompt to send.")
     
+        await query.delete()
+
     elif query.data == 'cancel':
         await query.edit_message_text("Prompt cancelled.")
 

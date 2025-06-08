@@ -38,7 +38,6 @@ async def transcribe_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Message too long, please limit to 4096 characters.")
         return
 
-    # Store message in context for later confirmation steps
     context.user_data["pending_transcript"] = incoming_message
     context.user_data["pending_prompt"] = incoming_message
 
@@ -105,21 +104,37 @@ async def handle_prompt_decision(update: Update, context: ContextTypes.DEFAULT_T
 
     if query.data == 'send_prompt':
         if prompt:
-            await query.edit_message_text("Sending prompt...")
+            mess = await query.edit_message_text("Sending prompt...")
             
             generated_content = markdownify(
                 handle_user_message(query.from_user.id, prompt)
             )
-
+            await mess.delete()
             await send_chunked_message(query.message, generated_content)
 
         else:
             await query.edit_message_text("No prompt to send.")
     
-        await query.delete()
+        # await query.delete()
 
     elif query.data == 'cancel':
-        await query.edit_message_text("Prompt cancelled.")
+        if 'pending_transcript' in context.user_data:
+            del context.user_data['pending_transcript']
+            mess = await query.edit_message_text("Transcription cancelled.")
+            await query.message.reply_text(
+                "Do you want to send the transcribed text as a prompt?",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Yes", callback_data='send_prompt')],
+                    [InlineKeyboardButton("No", callback_data='cancel')]
+                ])
+            )
+            await mess.delete()
+
+        elif 'pending_prompt' in context.user_data:
+            del context.user_data['pending_prompt']
+            await query.edit_message_text("Prompt cancelled.")
+        else:
+            await query.edit_message_text("Prompt cancelled.")
 
 
 async def set_audio_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):

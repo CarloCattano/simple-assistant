@@ -20,6 +20,7 @@ def main():
     app.add_handler(CommandHandler("clear", clear_user_history))
     app.add_handler(CommandHandler("audio", set_audio_mode))
     app.add_handler(CommandHandler("text", set_text_mode))
+    # TODO - /tool web best kebab in Berlin
 
     app.add_handler(CallbackQueryHandler(handle_tts_request, pattern="^send_audio_tts$"))
     app.add_handler(CallbackQueryHandler(handle_prompt_decision, pattern="^(send_prompt|cancel)$"))

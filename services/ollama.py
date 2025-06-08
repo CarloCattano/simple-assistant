@@ -4,6 +4,9 @@ from typing import Dict, List
 
 from ollama import chat
 
+from tools import load_tools
+
+
 # Internal global mapping of thread/session -> UUID
 _thread_local = threading.local()
 
@@ -13,29 +16,9 @@ user_histories: Dict[str, List[Dict[str, str]]] = {}
 MODEL_NAME = "llama3.2"
 #"deepseek-r1:1.5b"
 
+available_functions = load_tools()
 
-# TOOL TEST
-def add_two_numbers(a: int, b: int) -> int:
-    return a + b
-
-def square_root(a: float) -> float:
-    return float(a) ** 0.5 
-
-
-available_functions = {
-    'add_two_numbers': {
-        'function': add_two_numbers,
-        'triggers': ['add', 'sum', 'plus'],
-    },
-    'square_root': {
-        'function': square_root,
-        'triggers': ['square root', 'sqrt', 'root'],
-    }
-}
-
-
-
-TOOL_ENABLE_TRIGGERS = ["tool", "use tools", "/tool"]
+TOOL_ENABLE_TRIGGERS = ["tool", "use tools", "tools"]
 
 def should_use_tools(prompt: str) -> bool:
     lower_prompt = prompt.lower()

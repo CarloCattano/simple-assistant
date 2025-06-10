@@ -24,6 +24,9 @@ async def send_chunked_message(target, text: str, parse_mode='MarkdownV2', chunk
 async def send_voice_reply(update_message, filename, caption):
     try:
         with open(filename, "rb") as f:
+            # trim caption when too long 
+            if len(caption) > 1024:
+                caption = caption[:1021] + "..."
             await update_message.reply_voice(voice=f, caption=caption)
     except Exception as e:
         logger.error(f"Error sending file: {e}")
@@ -46,6 +49,8 @@ async def respond_in_mode(update_message, context, user_input, ai_output):
         filename = await synthesize_speech(ai_output)
 
         if filename:
+            if len(user_input) > 100:
+                user_input = user_input[:100] + "..."
             await send_voice_reply(update_message, filename, caption=user_input)
         else:
             await update_message.reply_text("Content generation failed.")

@@ -75,7 +75,8 @@ async def handle_tts_request(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if filename:
             try:
                 with open(filename, "rb") as f:
-                    caption_text = f"Transcribed text: {user_message}"
+                    # caption_text = f"Transcribed text: {user_message}"
+                    caption_text = user_message[:1024]
                     await query.message.reply_voice(voice=f, caption=caption_text)
 
             except Exception as e:

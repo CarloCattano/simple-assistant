@@ -7,7 +7,8 @@ import requests
 from config import GEMINI_KEY
 from utils.logger import RED_COL, RST
 
-API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_KEY}"
+MODEL_NAME = "gemini-2.0-flash"
+API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={GEMINI_KEY}"
 
 CONVERSATION_FILE = "user_conversations.json"
 
@@ -20,7 +21,6 @@ def save_conversations():
         for key in keys_to_remove:
             del user_conversations[key]
 
-    # Save the current conversations to a JSON file
     with open(CONVERSATION_FILE, "w", encoding="utf-8") as f:
         json.dump(user_conversations, f, ensure_ascii=False, indent=2)
 
@@ -41,7 +41,16 @@ def load_conversations():
     else:
         user_conversations = {}
 
+def delete_conversations_file():
+    if os.path.exists(CONVERSATION_FILE):
+        os.remove(CONVERSATION_FILE)
+        print(f"{RED_COL}Deleted conversations file{RST}")
+    else:
+        print(f"{RED_COL}Conversations file does not exist{RST}")
+
+
 load_conversations()
+
 
 def handle_user_message(user_id, message_text):
     key = str(user_id)  # Convert to string for JSON-safe key
@@ -56,6 +65,7 @@ def handle_user_message(user_id, message_text):
     user_conversations[key] = history
     save_conversations()
     return reply
+
 
 def generate_content(prompt: str, history: list = None) -> str:
     """

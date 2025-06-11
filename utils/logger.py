@@ -2,6 +2,8 @@ import logging
 
 from telegram import Update
 
+from config import ADMIN_ID
+
 RED_COL = "\033[91m"
 GREEN_COL = "\033[92m"
 RST = "\033[0m"
@@ -21,9 +23,9 @@ def log_user_action(action: str, update: Update, extra: str = ""):
     if extra:
         message += f" | Detail: {extra}"
 
-    if userId == 6661376010:
+    if str(userId) == str(ADMIN_ID):
         logger.warning(f"{GREEN_COL}{message}{RST}")
 
-    if userId != 6661376010:
+    if str(userId) != str(ADMIN_ID):
         logger.warning(f"{RED_COL}{message}{RST}")
 

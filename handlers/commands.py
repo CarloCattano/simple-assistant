@@ -1,7 +1,6 @@
 import os
 
-from telegram import (ForceReply, InlineKeyboardButton, InlineKeyboardMarkup,
-                      Update)
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 from telegramify_markdown import markdownify
 
@@ -21,12 +20,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user.id == int(ADMIN_ID):
         await update.message.reply_markdown(
             f"Welcome back, sir {user.name}!",
-            reply_markup=ForceReply(selective=True),
         )
     else:
         await update.message.reply_markdown(
             f"Hi {user.name}! \n *THIS* is an _experimental_ private bot, please do not use *it*!",
-            reply_markup=ForceReply(selective=True),
         )
 
     log_user_action("User used /start", update, user)
@@ -74,7 +71,6 @@ async def handle_tts_request(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if filename:
             try:
                 with open(filename, "rb") as f:
-                    # caption_text = f"Transcribed text: {user_message}"
                     caption_text = user_message[:1024]
                     await query.message.reply_voice(voice=f, caption=caption_text)
 
@@ -97,7 +93,6 @@ async def handle_tts_request(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 [InlineKeyboardButton("No", callback_data='cancel')]
             ])
         )
-        
 
 
 async def handle_prompt_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -142,13 +137,16 @@ async def handle_prompt_decision(update: Update, context: ContextTypes.DEFAULT_T
 async def set_audio_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['mode'] = 'audio'
     await update.message.reply_text("Audio mode activated.")
+        
 
 async def set_text_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['mode'] = 'text'
     await update.message.reply_text("Text mode activated.")
 
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Help!")
+
 
 async def clear_user_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.warn(f"Clearing history for {update.effective_user}")

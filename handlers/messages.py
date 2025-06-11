@@ -55,8 +55,11 @@ async def respond_in_mode(update_message, context, user_input, ai_output):
             await update_message.reply_text("Content generation failed.")
         
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, *args):
     user_text = update.message.text
+
+    if user_text.startswith('/'):
+        user_text = user_text.split(' ', 1)[1] if ' ' in user_text else ''
 
     if not user_text:
         await update.message.reply_text("Please send a valid text message.")
@@ -64,7 +67,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     log_user_action("text_message", update, user_text)
 
-    mess = await update.message.reply_text("Asking Ai God's...")
+    mode = context.user_data.get('mode', 'text')
+    mess = await update.message.reply_text(f" {mode} Ai God's...")
     
     if (LLM_PROVIDER == 'gemini'):
         generated_content = handle_user_message(update.effective_user, user_text)

@@ -5,7 +5,7 @@ from telegram.ext import ContextTypes
 from telegramify_markdown import markdownify
 
 from config import ADMIN_ID, LLM_PROVIDER
-from handlers.messages import send_chunked_message
+from handlers.messages import send_chunked_message, handle_message
 from services.gemini import clear_conversations, handle_user_message
 from services.ollama import clear_history
 from services.tts import synthesize_speech
@@ -133,16 +133,27 @@ async def handle_prompt_decision(update: Update, context: ContextTypes.DEFAULT_T
         else:
             await query.edit_message_text("Prompt cancelled.")
 
+async def set_mode(update: Update, context: ContextTypes.DEFAULT_TYPE, mode: str):
+    message_text = f"{mode} Mode activated."
+
+    command = update.effective_message.text.split(' ', 1)
+    cmd_args = command[1] if len(command) > 1 else ''
+
+    context.user_data['mode'] = mode
+    
+    if not cmd_args:
+        await update.message.reply_text(message_text)
+        return
+
+    mess = await update.message.reply_text(message_text)
+    await handle_message(update, context, cmd_args)
+    await mess.delete()
 
 async def set_audio_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['mode'] = 'audio'
-    await update.message.reply_text("Audio mode activated.")
-        
+    await set_mode(update, context, 'audio')
 
 async def set_text_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['mode'] = 'text'
-    await update.message.reply_text("Text mode activated.")
-
+    await set_mode(update, context, 'text')
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Help!")

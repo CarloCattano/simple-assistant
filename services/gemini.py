@@ -3,7 +3,6 @@ import json
 import os
 
 import requests
-from telegram import UniqueGiftSymbol
 
 from config import GEMINI_KEY
 from utils.logger import RED_COL, RST

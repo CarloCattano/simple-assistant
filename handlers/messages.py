@@ -7,7 +7,6 @@ from telegramify_markdown import markdownify
 from config import LLM_PROVIDER
 from services.gemini import handle_user_message
 from services.generate import generate_content
-from services.ollama import MODEL_NAME
 from services.stt import transcribe
 from services.tts import synthesize_speech
 from utils.logger import log_user_action, logger

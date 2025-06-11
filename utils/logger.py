@@ -1,9 +1,6 @@
-import json
 import logging
-import os
 
 from telegram import Update
-from telegram.ext import ContextTypes
 
 RED_COL = "\033[91m"
 GREEN_COL = "\033[92m"

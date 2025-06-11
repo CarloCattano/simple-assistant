@@ -5,10 +5,9 @@ from telegram import (ForceReply, InlineKeyboardButton, InlineKeyboardMarkup,
 from telegram.ext import ContextTypes
 from telegramify_markdown import markdownify
 
-from config import LLM_PROVIDER, ADMIN_ID
+from config import ADMIN_ID, LLM_PROVIDER
 from handlers.messages import send_chunked_message
 from services.gemini import clear_conversations, handle_user_message
-from services.generate import generate_content
 from services.ollama import clear_history
 from services.tts import synthesize_speech
 from utils.logger import log_user_action
@@ -21,7 +20,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if user.id == int(ADMIN_ID):
         await update.message.reply_markdown(
-            f"Welcome back, sir {user.name}! \n !",
+            f"Welcome back, sir {user.name}!",
             reply_markup=ForceReply(selective=True),
         )
     else:

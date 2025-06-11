@@ -1,7 +1,6 @@
 import base64
 import html
 import logging
-import os
 import re
 import uuid
 
@@ -28,9 +27,9 @@ async def synthesize_speech(text: str, output_filename: str = None):
 
     body = {
         "input": {"text": text},
-        "voice": {"languageCode": "en-US", "name": "Zephyr"},
-        "audioConfig": {"audioEncoding": "OGG_OPUS"},
 
+        "voice": {"languageCode": "en-GB", "name": "en-GB-Chirp3-HD-Charon"},
+        "audioConfig": {"audioEncoding": "OGG_OPUS"},
     }
 
     try:

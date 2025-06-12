@@ -68,7 +68,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, *ar
     log_user_action("text_message", update, user_text)
 
     mode = context.user_data.get('mode', 'text')
-    mess = await update.message.reply_text(f" {mode} Ai God's...")
+    mess = await update.message.reply_text(f" {mode} AI God's...")
     
     if (LLM_PROVIDER == 'gemini'):
         generated_content = handle_user_message(update.effective_user, user_text)

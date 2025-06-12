@@ -14,8 +14,12 @@ logger = logging.getLogger(__name__)
 def clean_text_for_tts(text: str) -> str:
     text = html.unescape(text) 
     text = re.sub(r"[^a-zA-Z0-9\s.,?!:]", "", text) 
+    # allow [ ] for google tts controls 
+    # text = re.sub(r"[^a-zA-Z0-9\s.,?!:\[\]]", "", text)  # Remove unwanted characters
+
     text = re.sub(r"\s+", " ", text) #Remove multiple spaces
 
+    print(text)
     return text.strip()
 
 async def synthesize_speech(text: str, output_filename: str = None):
@@ -26,9 +30,8 @@ async def synthesize_speech(text: str, output_filename: str = None):
     text = clean_text_for_tts(text)
 
     body = {
-        "input": {"text": text},
-
-        "voice": {"languageCode": "en-GB", "name": "en-GB-Chirp3-HD-Charon"},
+        "input": {"markup": text},
+        "voice": {"languageCode": "en-GB", "name": "en-GB-Chirp3-HD-Zephyr"},
         "audioConfig": {"audioEncoding": "OGG_OPUS"},
     }
 

@@ -84,7 +84,6 @@ def generate_content(prompt: str) -> str:
                 else:
                     print(f"Function {tool.function.name} not found")
 
-
         reply = filter_thinking_output(response.message.content)
         history.append({'role': 'assistant', 'content': reply})
         return reply

@@ -4,6 +4,7 @@ from typing import Dict, List
 
 from ollama import chat
 from tools import load_tools
+from config import SYSTEM_PROMPT
 
 # Internal global mapping of thread/session -> UUID
 _thread_local = threading.local()
@@ -66,9 +67,14 @@ def generate_content(prompt: str) -> str:
     try:
         use_tools = should_use_tools(prompt)
 
+        # Prepend system prompt if history is empty
+        messages = history
+        if len(history) == 1:
+            messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
+
         response = chat(
             model=MODEL_NAME,
-            messages=history,
+            messages=messages,
             keep_alive=0,
             tools=[entry['function'] for entry in available_functions.values()] if use_tools else []
         )

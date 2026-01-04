@@ -3,7 +3,8 @@ import html
 import logging
 import re
 import uuid
-
+import wave
+import io
 import requests
 
 from config import GEMINI_KEY
@@ -22,31 +23,66 @@ def clean_text_for_tts(text: str) -> str:
     print(text)
     return text.strip()
 
-async def synthesize_speech(text: str, output_filename: str = None):
-    if output_filename is None:
-        output_filename = f"tts_{uuid.uuid4()}.mp3"
-    url = f"https://texttospeech.googleapis.com/v1beta1/text:synthesize?key={GEMINI_KEY}"
+async def synthesize_speech(text: str, output_filename: str = 'tts.raw'):
+
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent"
 
     text = clean_text_for_tts(text)
 
     body = {
-        "input": {"markup": text},
-        "voice": {"languageCode": "en-GB", "name": "en-GB-Chirp3-HD-Zephyr"},
-        "audioConfig": {"audioEncoding": "OGG_OPUS"},
+        "contents": [
+            {
+                "parts": [
+                    {"text": text}
+                ]
+            }
+        ],
+        "generationConfig": {
+            "responseModalities": ["AUDIO"],
+            "speechConfig": {
+                "voiceConfig": {
+                    "prebuiltVoiceConfig": {
+                        "voiceName": "Kore"
+                    }
+                }
+            }
+        },
+        "model": "gemini-2.5-flash-preview-tts",
     }
 
     try:
-        response = requests.post(url, headers={"Content-Type": "application/json"}, json=body, timeout=30)
-        response.raise_for_status()
-        audio_b64 = response.json().get("audioContent")
-        if not audio_b64:
-            logger.error("Missing audioContent in response.")
-            return None
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": GEMINI_KEY,
+        }
 
-        with open(output_filename, "wb") as f:
-            f.write(base64.b64decode(audio_b64))
+        response = requests.post(url, headers=headers, json=body, timeout=30)
+        response.raise_for_status()
+
+        data = response.json()
+        audio_b64 = (
+            data.get("candidates", [{}])[0]
+            .get("content", {})
+            .get("parts", [{}])[0]
+            .get("inlineData", {})
+            .get("data")
+        )
+
+        if not audio_b64:
+          logger.error("Missing audio data in response.")
+          return None
+
+        pcm_data = base64.b64decode(audio_b64)
+        output_filename = output_filename.replace(".raw", ".wav")
+
+        with wave.open(output_filename, "wb") as wf:
+            wf.setnchannels(1)        # mono
+            wf.setsampwidth(2)        # 16-bit samples
+            wf.setframerate(24000)    # 24 kHz
+            wf.writeframes(pcm_data)
+
         return output_filename
-    
+
     except Exception as e:
         logger.error(f"TTS request failed: {e}")
         return None

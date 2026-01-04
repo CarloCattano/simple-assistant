@@ -4,10 +4,10 @@ import os
 
 import requests
 
-from config import GEMINI_KEY
+from config import GEMINI_KEY, SYSTEM_PROMPT
 from utils.logger import RED_COL, RST
 
-MODEL_NAME = "gemini-2.0-flash"
+MODEL_NAME = "gemini-1.5-flash-latest"
 API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={GEMINI_KEY}"
 
 CONVERSATION_FILE = "user_conversations.json"
@@ -79,7 +79,12 @@ def generate_content(prompt: str, history: list = None) -> str:
     contents.append({"role": "user", "parts": [{"text": prompt}]})
 
     payload = {
-        "contents": contents
+        "contents": contents,
+        "system_instruction": {
+            "parts": {
+                "text": SYSTEM_PROMPT
+            }
+        }
     }
     headers = {
         "Content-Type": "application/json"
@@ -90,6 +95,7 @@ def generate_content(prompt: str, history: list = None) -> str:
         candidates = response.json().get("candidates", [])
         if not candidates:
             return "No response from Gemini."
+        
         return candidates[0]["content"]["parts"][0]["text"]
     except requests.RequestException as e:
         return f"Error calling Gemini API: {e}"

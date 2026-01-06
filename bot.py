@@ -8,7 +8,7 @@ from handlers.commands import (clear_user_history, handle_prompt_decision,
                                handle_tts_request, help_command,
                                set_audio_mode, set_text_mode, start,
                                transcribe_text)
-from handlers.messages import handle_message, voice_handler
+from handlers.messages import handle_message, voice_handler, handle_image
 
 logging.basicConfig(level=logging.WARNING)
 
@@ -28,6 +28,10 @@ def main():
 
     app.add_handler(MessageHandler(filters.TEXT & filters.FORWARDED, transcribe_text))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    # get images
+    app.add_handler(MessageHandler(filters.PHOTO, handle_image))
+
 
     app.add_handler(MessageHandler(filters.VOICE, voice_handler))
     

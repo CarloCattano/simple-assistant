@@ -1,8 +1,0 @@
-h2
-parsel
-dotenv
-python-telegram-bot
-requests
-markdownify
-telegramify-markdown
-ollama

@@ -11,6 +11,8 @@ from services.stt import transcribe
 from services.tts import synthesize_speech
 from utils.logger import log_user_action, logger
 
+from services.ocr import process_image
+
 
 async def send_chunked_message(target, text: str, parse_mode='MarkdownV2', chunk_size=4096):
     if len(text) > chunk_size:
@@ -54,6 +56,32 @@ async def respond_in_mode(update_message, context, user_input, ai_output):
         else:
             await update_message.reply_text("Content generation failed.")
         
+async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    image_file = await update.message.photo[-1].get_file()
+    
+    receipImg = "receipt_image.jpg"
+
+    await image_file.download_to_drive(receipImg)
+    mess = await update.message.reply_text("Image received.")
+    
+    ocr_text = process_image(receipImg)
+    if os.path.exists(receipImg):
+        os.remove(receipImg)
+
+    await mess.delete()
+    mess = await update.message.reply_text(f"text extracted, sending to llm")
+
+    receipt_prompt = '''
+        You are an AI assistant that extracts information from receipts.
+        List the items bought and total payed.
+        Fill any missing or malformed words from context: ''' + ocr_text
+
+    if (LLM_PROVIDER == 'gemini'):
+        reply = handle_user_message(update.effective_user, receipt_prompt)
+    elif (LLM_PROVIDER == 'ollama'):
+        reply = generate_content(receipt_prompt)
+    await mess.delete()
+    await respond_in_mode(update.message, context, "Describe the image.", reply)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, *args):
     user_text = update.message.text

@@ -1,3 +1,4 @@
+pytesseract
 h2
 parsel
 dotenv

@@ -1,0 +1,25 @@
+[tool.poetry]
+name = "simple-assistant"
+version = "0.1.0"
+description = "Telegram bot with auto-reload and utility libraries"
+authors = ["Your Name <you@example.com>"]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+pytesseract = "*"
+h2 = "*"
+parsel = "*"
+python-dotenv = "*"          # dotenv package
+python-telegram-bot = "*"    # your bot framework
+requests = "*"
+markdownify = "*"
+telegramify-markdown = "*"
+ollama = "*"
+
+[tool.poetry.group.dev.dependencies]
+watchgod = "*"            # for auto-reload
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+

@@ -12,9 +12,12 @@ client = Client(
     http2=True,
 )
 
+
 def search_and_scrape(url):
-    if not url.startswith(('http://', 'https://')):
-        url = 'https://' + url
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+
+    print(f"\nScraping tool called URL: {url}")
 
     response = client.get(url)
 
@@ -23,23 +26,23 @@ def search_and_scrape(url):
 
     sel = Selector(text=response.text)
 
-    title = sel.xpath('//title/text()').get(default="(No title)")
+    title = sel.xpath("//title/text()").get(default="(No title)")
 
     meta_tags = {}
-    for tag in sel.xpath('//meta'):
-        name = tag.xpath('.//@name').get()
-        prop = tag.xpath('.//@property').get()
-        content = tag.xpath('.//@content').get()
+    for tag in sel.xpath("//meta"):
+        name = tag.xpath(".//@name").get()
+        prop = tag.xpath(".//@property").get()
+        content = tag.xpath(".//@content").get()
 
         key = name or prop
         if key and content:
             meta_tags[key] = content
 
-    body_text_parts = sel.xpath('//body//text()').getall()
-    body_text = ' \n'.join(t.strip() for t in body_text_parts if t.strip())
+    body_text_parts = sel.xpath("//body//text()").getall()
+    body_text = " \n".join(t.strip() for t in body_text_parts if t.strip())
 
     links = []
-    for link in sel.xpath('//a/@href').getall():
+    for link in sel.xpath("//a/@href").getall():
         if len(link) <= 80:
             links.append(link)
 
@@ -53,7 +56,11 @@ def search_and_scrape(url):
 
 
 tool = {
+    'name': 'search_and_scrape',
     'function': search_and_scrape,
-    'triggers': ['scrape', 'get']
+    'triggers': ['scrape', 'get', 'scraper'],
+    'description': 'Scrape a given URL and return title, body text and links.',
+    'parameters': {
+        'url': {'type': 'string', 'description': 'The URL to scrape'},
+    },
 }
-

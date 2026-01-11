@@ -1,5 +1,7 @@
+import json
 import os
 import re
+import uuid
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
@@ -14,10 +16,22 @@ from utils.logger import log_user_action, logger
 
 from services.ocr import process_image, group_tokens_by_line
 
+class ToolDirectiveError(Exception):
+    pass
+
+
 try:
-    from services.ollama import pop_last_tool_audio
+    from services.ollama import (
+        pop_last_tool_audio,
+        resolve_tool_identifier,
+        run_tool_direct,
+        translate_instruction_to_command,
+    )
 except ImportError:  # Guard against optional Ollama dependency
     pop_last_tool_audio = None
+    resolve_tool_identifier = None
+    run_tool_direct = None
+    translate_instruction_to_command = None
 
 
 async def send_chunked_message(
@@ -54,9 +68,9 @@ async def maybe_send_tool_audio(update_message, context):
     if not payload:
         return
 
-    filename = payload.get("path")
     summary = payload.get("summary", "")
     tool_name = payload.get("tool_name", "")
+    script = payload.get("script")
 
     caption = payload.get("caption")
     if not caption:
@@ -69,30 +83,22 @@ async def maybe_send_tool_audio(update_message, context):
         else:
             caption = "TL;DR"
 
-    if not filename:
-        logger.warning("Missing filename for tool audio payload: %s", payload)
+    if not script:
+        logger.warning("Missing audio script for tool payload: %s", payload)
         return
 
-    # Clean up any previously pending audio before storing the new one.
-    existing = context.user_data.pop("pending_tool_audio", None)
-    if existing:
-        old_path = existing.get("path")
-        if old_path and os.path.exists(old_path):
-            try:
-                os.remove(old_path)
-            except OSError as err:
-                logger.warning("Failed to remove stale TL;DR audio %s: %s", old_path, err)
-
     context.user_data["pending_tool_audio"] = {
-        "path": filename,
+        "script": script,
         "caption": caption,
+        "tool_name": tool_name,
+        "summary": summary,
     }
 
     keyboard = InlineKeyboardMarkup(
         [
             [
                 InlineKeyboardButton("🔊", callback_data="tool_tldr_audio_yes"),
-                InlineKeyboardButton("Skip", callback_data="tool_tldr_audio_no"),
+                InlineKeyboardButton("Text", callback_data="tool_tldr_audio_no"),
             ]
         ]
     )
@@ -140,24 +146,29 @@ async def handle_tool_audio_choice(update: Update, context: ContextTypes.DEFAULT
     payload = context.user_data.pop("pending_tool_audio", None)
 
     if query.data == "tool_tldr_audio_yes" and payload:
-        filename = payload.get("path")
+        script = payload.get("script")
         caption = payload.get("caption", "TLDR")
 
-        if filename and os.path.exists(filename):
-            await send_voice_reply(query.message, filename, caption)
-            await query.message.edit_text("Shared the TLDR audio.")
+        if not script:
+            await query.message.edit_text("Audio script missing, unable to send TLDR.")
             return
 
-        await query.message.edit_text("Audio file missing, unable to send TLDR.")
+        await query.message.edit_text("Generating the TLDR audio...")
+        filename = None
+        try:
+            filename = await synthesize_speech(
+                script, f"tool_tldr_{uuid.uuid4().hex}.raw"
+            )
+        except Exception as err:
+            logger.error("Synthesizing TLDR audio failed: %s", err)
+
+        if filename:
+            await send_voice_reply(query.message, filename, caption)
+            await query.message.edit_text("Shared the TLDR audio.")
+        else:
+            await query.message.edit_text("Failed to generate TLDR audio.")
         return
 
-    if payload:
-        filename = payload.get("path")
-        if filename and os.path.exists(filename):
-            try:
-                os.remove(filename)
-            except OSError as err:
-                logger.warning("Failed to remove skipped TLDR audio %s: %s", filename, err)
 
     await query.message.edit_text("Skipped the TLDR audio.")
 
@@ -204,6 +215,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, *ar
     if user_text.startswith("/"):
         user_text = user_text.split(" ", 1)[1] if " " in user_text else ""
 
+    if LLM_PROVIDER == "ollama" and run_tool_direct:
+        try:
+            tool_request = _extract_tool_request(user_text)
+        except ToolDirectiveError as directive_err:
+            await update.message.reply_text(str(directive_err))
+            return
+
+        if tool_request:
+            tool_name, parameters = tool_request
+            generated_content = run_tool_direct(tool_name, parameters)
+
+            if generated_content is None:
+                await update.message.reply_text("Unknown tool request.")
+                return
+
+            await respond_in_mode(update.message, context, user_text, generated_content)
+            return
+
     if not user_text:
         await update.message.reply_text("Please send a valid text message.")
         return
@@ -220,7 +249,117 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, *ar
         generated_content = generate_content(user_text)
         await respond_in_mode(update.message, context, user_text, generated_content)
 
-    await mess.delete()
+
+def _extract_tool_request(text: str):
+    if not text:
+        return None
+
+    start = text.find("{")
+    end = text.rfind("}")
+
+    if start != -1 and end != -1 and end > start:
+        try:
+            payload = json.loads(text[start : end + 1])
+        except json.JSONDecodeError:
+            payload = None
+
+        if isinstance(payload, dict):
+            name = payload.get("name")
+            parameters = payload.get("parameters") or {}
+
+            if isinstance(name, str) and isinstance(parameters, dict):
+                return name, parameters
+
+    return _parse_tool_directive(text)
+
+
+def _parse_tool_directive(text: str):
+    if not resolve_tool_identifier:
+        return None
+
+    match = re.match(r"\s*(?:run|use)\s+tool\s+(\S+)(?:\s+(.*))?$", text, re.IGNORECASE)
+    if not match:
+        return None
+
+    tool_identifier = match.group(1)
+    remaining = (match.group(2) or "").strip()
+
+    resolved = resolve_tool_identifier(tool_identifier)
+    if not resolved:
+        raise ToolDirectiveError(f"Unknown tool '{tool_identifier}'.")
+
+    resolved_name, entry = resolved
+    parameters_def = entry.get("parameters", {}) or {}
+
+    if not parameters_def:
+        return resolved_name, {}
+
+    if len(parameters_def) != 1:
+        raise ToolDirectiveError("Tool requires structured JSON parameters.")
+
+    param_name = next(iter(parameters_def))
+
+    if not remaining:
+        raise ToolDirectiveError("Provide the arguments needed for this tool call.")
+
+    value = remaining
+    if param_name == "prompt" and translate_instruction_to_command:
+        translated = translate_instruction_to_command(remaining)
+        if not translated:
+            raise ToolDirectiveError("Couldn't translate request into a shell command. Please send the exact command instead.")
+
+        cleaned = translated.strip()
+        normalized = cleaned.lower()
+        default_normalized = remaining.lower()
+        common_prefixes = (
+            "sudo",
+            "ls",
+            "pwd",
+            "cd",
+            "cat",
+            "find",
+            "grep",
+            "tail",
+            "head",
+            "touch",
+            "mkdir",
+            "rm",
+            "cp",
+            "mv",
+            "python",
+            "pip",
+            "npm",
+            "node",
+            "git",
+            "docker",
+            "curl",
+            "wget",
+            "top",
+            "htop",
+            "df",
+            "du",
+            "whoami",
+            "ps",
+            "kill",
+            "chmod",
+            "chown",
+            "service",
+            "systemctl",
+            "journalctl",
+            "tar",
+            "zip",
+            "unzip",
+        )
+
+        if not normalized or (
+            normalized == default_normalized
+            and not normalized.startswith(common_prefixes)
+        ):
+            raise ToolDirectiveError("I couldn't infer a valid shell command. Please send the exact command to run.")
+
+        value = cleaned
+
+    return resolved_name, {param_name: value}
 
 
 async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -229,7 +368,7 @@ async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mess = await update.message.reply_text("Voice message received and saved.")
 
     transcription = await transcribe("voice_message.ogg")
-    print(transcription)
+    logger.info(f"\nTranscription result: {transcription}\n")
     text = transcription["candidates"][0]["content"]["parts"][0]["text"].strip()
     await mess.delete()
 

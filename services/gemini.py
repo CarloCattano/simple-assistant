@@ -12,26 +12,29 @@ API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}
 
 CONVERSATION_FILE = "user_conversations.json"
 
+
 def save_conversations():
     # if logs grow bigger than 40 elements, pop the odest out
     global user_conversations
     if len(user_conversations) > 40:
         print(f"{RED_COL}Trimming logs{RST} ")
-        keys_to_remove = list(user_conversations.keys())[:len(user_conversations) - 20]
+        keys_to_remove = list(user_conversations.keys())[: len(user_conversations) - 20]
         for key in keys_to_remove:
             del user_conversations[key]
 
     with open(CONVERSATION_FILE, "w", encoding="utf-8") as f:
         json.dump(user_conversations, f, ensure_ascii=False, indent=2)
 
+
 def clear_conversations(delete_usr_id):
     global user_conversations
-    key = str(delete_usr_id)  
+    key = str(delete_usr_id)
     if key in user_conversations:
         del user_conversations[key]
         save_conversations()
         return True
     return False
+
 
 def load_conversations():
     global user_conversations
@@ -40,6 +43,7 @@ def load_conversations():
             user_conversations = json.load(f)
     else:
         user_conversations = {}
+
 
 def delete_conversations_file():
     if os.path.exists(CONVERSATION_FILE):
@@ -80,23 +84,16 @@ def generate_content(prompt: str, history: list = None) -> str:
 
     payload = {
         "contents": contents,
-        "system_instruction": {
-            "parts": {
-                "text": SYSTEM_PROMPT
-            }
-        }
+        "system_instruction": {"parts": {"text": SYSTEM_PROMPT}},
     }
-    headers = {
-        "Content-Type": "application/json"
-    }
+    headers = {"Content-Type": "application/json"}
     try:
         response = requests.post(API_URL, headers=headers, json=payload)
         response.raise_for_status()
         candidates = response.json().get("candidates", [])
         if not candidates:
             return "No response from Gemini."
-        
+
         return candidates[0]["content"]["parts"][0]["text"]
     except requests.RequestException as e:
         return f"Error calling Gemini API: {e}"
-

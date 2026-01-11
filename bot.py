@@ -14,6 +14,8 @@ from handlers.commands import (
     handle_prompt_decision,
     handle_tts_request,
     help_command,
+    show_flow,
+    show_history,
     set_audio_mode,
     set_text_mode,
     start,
@@ -34,6 +36,8 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("history", show_history))
+    app.add_handler(CommandHandler("flow", show_flow))
 
     app.add_handler(CommandHandler("clear", clear_user_history))
     app.add_handler(CommandHandler("audio", set_audio_mode))

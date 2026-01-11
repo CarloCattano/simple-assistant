@@ -18,7 +18,7 @@ def clean_text_for_tts(text: str) -> str:
     text = re.sub(r"[^a-zA-Z0-9\s.,?!:]", "", text)
     # text = re.sub(r"\s+", " ", text)  # Remove multiple spaces
 
-    print(text)
+    logger.info(f"\nCleaned text for TTS: {text}\n")
     return text.strip()
 
 

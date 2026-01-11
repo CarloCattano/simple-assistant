@@ -1,5 +1,4 @@
 *.mp3
-*.mp3
 *.ogg
 *.off
 *.json
@@ -10,3 +9,5 @@ venv
 .env
 *.log
 user_conversations.json
+uv.lock
+*.egg-info

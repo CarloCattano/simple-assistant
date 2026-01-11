@@ -1,10 +1,11 @@
+import asyncio
 import base64
 import html
 import logging
 import re
-import uuid
 import wave
-import io
+from typing import Optional
+
 import requests
 
 from config import GEMINI_KEY
@@ -13,39 +14,26 @@ logger = logging.getLogger(__name__)
 
 
 def clean_text_for_tts(text: str) -> str:
-    text = html.unescape(text) 
-    text = re.sub(r"[^a-zA-Z0-9\s.,?!:]", "", text) 
-    # allow [ ] for google tts controls 
-    # text = re.sub(r"[^a-zA-Z0-9\s.,?!:\[\]]", "", text)  # Remove unwanted characters
-
-    text = re.sub(r"\s+", " ", text) #Remove multiple spaces
+    text = html.unescape(text)
+    text = re.sub(r"[^a-zA-Z0-9\s.,?!:]", "", text)
+    # text = re.sub(r"\s+", " ", text)  # Remove multiple spaces
 
     print(text)
     return text.strip()
 
-async def synthesize_speech(text: str, output_filename: str = 'tts.raw'):
 
+def _generate_tts_file(text: str, output_filename: str = "tts.raw") -> Optional[str]:
     url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent"
 
     text = clean_text_for_tts(text)
 
     body = {
-        "contents": [
-            {
-                "parts": [
-                    {"text": text}
-                ]
-            }
-        ],
+        "contents": [{"parts": [{"text": text}]}],
         "generationConfig": {
             "responseModalities": ["AUDIO"],
             "speechConfig": {
-                "voiceConfig": {
-                    "prebuiltVoiceConfig": {
-                        "voiceName": "Kore"
-                    }
-                }
-            }
+                "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": "Kore"}}
+            },
         },
         "model": "gemini-2.5-flash-preview-tts",
     }
@@ -69,16 +57,16 @@ async def synthesize_speech(text: str, output_filename: str = 'tts.raw'):
         )
 
         if not audio_b64:
-          logger.error("Missing audio data in response.")
-          return None
+            logger.error("Missing audio data in response.")
+            return None
 
         pcm_data = base64.b64decode(audio_b64)
         output_filename = output_filename.replace(".raw", ".wav")
 
         with wave.open(output_filename, "wb") as wf:
-            wf.setnchannels(1)        # mono
-            wf.setsampwidth(2)        # 16-bit samples
-            wf.setframerate(24000)    # 24 kHz
+            wf.setnchannels(1)  # mono
+            wf.setsampwidth(2)  # 16-bit samples
+            wf.setframerate(24000)  # 24 kHz
             wf.writeframes(pcm_data)
 
         return output_filename
@@ -87,3 +75,10 @@ async def synthesize_speech(text: str, output_filename: str = 'tts.raw'):
         logger.error(f"TTS request failed: {e}")
         return None
 
+
+async def synthesize_speech(text: str, output_filename: str = "tts.raw"):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _generate_tts_file, text, output_filename)
+
+def synthesize_speech_sync(text: str, output_filename: str = "tts.raw") -> Optional[str]:
+    return _generate_tts_file(text, output_filename)

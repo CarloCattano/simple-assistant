@@ -214,16 +214,49 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, *ar
     if not message or not message.text:
         return
 
-    user_text = message.text
+    prompt_history = context.user_data.setdefault("prompt_history", {})
+
+    raw_text = message.text
+    user_text = raw_text
 
     if user_text.startswith("/"):
         user_text = user_text.split(" ", 1)[1] if " " in user_text else ""
+
+    user_text = user_text.strip()
+
+    reprocess_detail = None
+    reply = message.reply_to_message
+    if reply:
+        original_prompt = prompt_history.get(reply.message_id)
+        if not original_prompt and reply.text:
+            original_prompt = reply.text.strip()
+
+        if original_prompt:
+            instructions = user_text
+            control_words = {"reprocess", "retry", "again", "repeat"}
+            normalized = instructions.lower().strip()
+            normalized = normalized.rstrip("!.?")
+            if normalized in control_words:
+                instructions = ""
+
+            if instructions:
+                user_text = f"{instructions}\n\n{original_prompt}"
+            else:
+                user_text = original_prompt
+
+            reprocess_detail = f"reply_to_message_id={reply.message_id}"
+
+    if not user_text:
+        await message.reply_text("Please send a valid text message.")
+        return
+
+    prompt_history[message.message_id] = user_text
 
     if LLM_PROVIDER == "ollama" and run_tool_direct:
         try:
             tool_request = _extract_tool_request(user_text)
         except ToolDirectiveError as directive_err:
-            await update.message.reply_text(str(directive_err))
+            await message.reply_text(str(directive_err), parse_mode=None)
             return
 
         if tool_request:
@@ -231,20 +264,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, *ar
             generated_content = run_tool_direct(tool_name, parameters)
 
             if generated_content is None:
-                await update.message.reply_text("Unknown tool request.")
+                await message.reply_text("Unknown tool request.", parse_mode=None)
                 return
 
             await respond_in_mode(message, context, user_text, generated_content)
             return
 
-    if not user_text:
-        await message.reply_text("Please send a valid text message.")
-        return
-
-    log_user_action("text_message", update, user_text)
+    action = "reply_reprocess" if reprocess_detail else "text_message"
+    detail = user_text if not reprocess_detail else f"{reprocess_detail}\n{user_text}"
+    log_user_action(action, update, detail)
 
     mode = context.user_data.get("mode", "text")
-    mess = await message.reply_text(f" {mode} AI God's...")
+    placeholder = f" {mode} AI God's..."
+    if reprocess_detail:
+        placeholder = f" {mode} Reprocessing previous message..."
+
+    mess = await message.reply_text(placeholder, parse_mode=None)
 
     if LLM_PROVIDER == "gemini":
         generated_content = handle_user_message(update.effective_user, user_text)
@@ -258,6 +293,9 @@ async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TY
     edited = update.edited_message
     if not edited or not edited.text:
         return
+
+    prompt_history = context.user_data.setdefault("prompt_history", {})
+    prompt_history[edited.message_id] = edited.text.strip()
 
     log_user_action("edited_text", update, edited.text)
 

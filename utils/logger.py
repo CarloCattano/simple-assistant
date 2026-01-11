@@ -17,18 +17,28 @@ logger.setLevel(logging.WARN)
 
 
 def log_user_action(action: str, update: Update, extra: str = ""):
-    user = update.effective_user
-    userId = update.message.from_user["id"]
-    user_info = f"\nUser: {userId} - @{user.username or 'N/A'} ({user.full_name})"
-    message = f"{user_info} \n Action: {action} \n ========== \n"
+    effective_user = update.effective_user
+    effective_message = update.effective_message
+
+    if not effective_user and effective_message and effective_message.from_user:
+        effective_user = effective_message.from_user
+
+    user_id = getattr(effective_user, "id", "unknown")
+    username = getattr(effective_user, "username", None) or "N/A"
+    full_name = (
+        getattr(effective_user, "full_name", None)
+        or getattr(effective_user, "name", None)
+        or "?"
+    )
+
+    user_info = f"\nUser: {user_id} - @{username} ({full_name})"
+    log_entry = f"{user_info} \n Action: {action} \n ========== \n"
     if extra:
-        message += f" | Detail: {extra}\n --- \n"
+        log_entry += f" | Detail: {extra}\n --- \n"
 
-    if str(userId) == str(ADMIN_ID):
-        logger.warning(f"{GREEN_COL}{message}{RST}")
+    colored_entry = f"{GREEN_COL}{log_entry}{RST}" if str(user_id) == str(ADMIN_ID) else f"{RED_COL}{log_entry}{RST}"
 
-    if str(userId) != str(ADMIN_ID):
-        logger.warning(f"{RED_COL}{message}{RST}")
+    logger.warning(colored_entry)
 
 def error(msg: str):
     logger.error(msg)

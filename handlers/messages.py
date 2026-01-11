@@ -210,7 +210,11 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, *args):
-    user_text = update.message.text
+    message = update.message
+    if not message or not message.text:
+        return
+
+    user_text = message.text
 
     if user_text.startswith("/"):
         user_text = user_text.split(" ", 1)[1] if " " in user_text else ""
@@ -230,24 +234,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, *ar
                 await update.message.reply_text("Unknown tool request.")
                 return
 
-            await respond_in_mode(update.message, context, user_text, generated_content)
+            await respond_in_mode(message, context, user_text, generated_content)
             return
 
     if not user_text:
-        await update.message.reply_text("Please send a valid text message.")
+        await message.reply_text("Please send a valid text message.")
         return
 
     log_user_action("text_message", update, user_text)
 
     mode = context.user_data.get("mode", "text")
-    mess = await update.message.reply_text(f" {mode} AI God's...")
+    mess = await message.reply_text(f" {mode} AI God's...")
 
     if LLM_PROVIDER == "gemini":
         generated_content = handle_user_message(update.effective_user, user_text)
-        await respond_in_mode(update.message, context, user_text, generated_content)
+        await respond_in_mode(message, context, user_text, generated_content)
     elif LLM_PROVIDER == "ollama":
         generated_content = generate_content(user_text)
-        await respond_in_mode(update.message, context, user_text, generated_content)
+        await respond_in_mode(message, context, user_text, generated_content)
 
 
 async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TYPE):

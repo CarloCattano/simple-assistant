@@ -3,12 +3,18 @@ import threading
 import uuid
 from collections import deque
 from datetime import datetime
+from logging import DEBUG
 from typing import Any, Dict, List, Optional, Tuple
 
 from ollama import chat
 from tools import load_tools
 from config import SYSTEM_PROMPT
 from utils import logger
+from utils.command_guard import (
+    detect_direct_command,
+    heuristic_command,
+    sanitize_command,
+)
 
 CONTENT_REPORTER_SCRIPT_PROMPT = (
     "Rewrite that summary into two energetic, fast-paced sentences that stay factually accurate,"
@@ -18,8 +24,11 @@ CONTENT_REPORTER_SCRIPT_PROMPT = (
 )
 
 COMMAND_TRANSLATOR_SYSTEM_PROMPT = (
-    "You convert natural language requests into a single Linux shell command."
-    " Respond with the command only, no explanations, prompts, or markdown fences."
+    "You convert natural language requests into a single Linux shell command.Do not replace original command strings with similar ones."
+    " Respond ONLY with the exact command, making sure any quotes are properly closed"
+    " (for example: echo \"Hello World\")."
+    " Do not add commentary, shell prompts, explanations, or additional lines."
+    " If the request is ambiguous or unsafe, respond with the single word NONE."
 )
 
 # Internal global mapping of thread/session -> UUID
@@ -37,12 +46,33 @@ logger.info(
 )
 
 TOOL_MODE = False
-TOOL_ENABLE_TRIGGERS = ["tool", "use", "tools", "run", "execute", "call"]
 
 EVENT_LOG_LIMIT = 200
 MAX_EVENT_TEXT = 400
 
 _event_log: deque[Dict[str, Any]] = deque(maxlen=EVENT_LOG_LIMIT)
+
+
+def _debug_dump(label: str, payload: Any) -> None:
+    log_instance = getattr(logger, "logger", None)
+    if log_instance is not None:
+        if not log_instance.isEnabledFor(DEBUG):
+            return
+    elif hasattr(logger, "isEnabledFor"):
+        if not logger.isEnabledFor(DEBUG):
+            return
+    else:
+        return
+
+    try:
+        serialized = json.dumps(payload, indent=2, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        serialized = repr(payload)
+
+    if hasattr(logger, "debug"):
+        logger.debug(f"[debug] {label}: {serialized}")
+    elif log_instance is not None:
+        log_instance.debug(f"[debug] {label}: {serialized}")
 
 
 def evaluate_tool_usage(prompt: str) -> Tuple[bool, Dict[str, dict]]:
@@ -55,9 +85,7 @@ def evaluate_tool_usage(prompt: str) -> Tuple[bool, Dict[str, dict]]:
         if any(trigger in lower_prompt for trigger in entry.get("triggers", []))
     }
 
-    should_use = bool(matched_tools) or TOOL_MODE or any(
-        trigger in lower_prompt for trigger in TOOL_ENABLE_TRIGGERS
-    )
+    should_use = bool(matched_tools) or TOOL_MODE
 
     return should_use, matched_tools
 
@@ -67,15 +95,36 @@ def generate_content(prompt: str) -> str:
     user_id = _get_or_create_user_id()
     history = user_histories.setdefault(user_id, [])
 
+    if not history or history[0].get("role") != "system":
+        history.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
+
     # Add user message
     history.append({"role": "user", "content": prompt})
     _record_event("user", prompt)
+    _debug_dump(
+        "history_after_user",
+        {
+            "user_id": user_id,
+            "entries": history,
+        },
+    )
 
     try:
         use_tools, matched_tools = evaluate_tool_usage(prompt)
+        _debug_dump(
+            "tool_evaluation",
+            {
+                "prompt": prompt,
+                "use_tools": use_tools,
+                "matched_tools": list(matched_tools.keys()),
+            },
+        )
         messages = history
-        if len(history) == 1:
-            messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
+
+        _debug_dump(
+            "chat_request",
+            {"messages": messages, "tools": list(available_functions.keys())},
+        )
 
         tool_pool = matched_tools if matched_tools else available_functions
         tool_callables = (
@@ -88,13 +137,27 @@ def generate_content(prompt: str) -> str:
             keep_alive=0,
             tools=tool_callables,
         )
+        response_payload = (
+            response.dict()
+            if hasattr(response, "dict")
+            else getattr(response, "__dict__", response)
+        )
+        _debug_dump("chat_response", response_payload)
 
         if response.message.tool_calls:
+            _debug_dump("tool_calls", [call.function.name for call in response.message.tool_calls])
             for tool in response.message.tool_calls:
                 func_entry = available_functions.get(tool.function.name)
                 if func_entry and (
                     not matched_tools or tool.function.name in matched_tools
                 ):
+                    _debug_dump(
+                        "executing_tool",
+                        {
+                            "tool": tool.function.name,
+                            "arguments": tool.function.arguments,
+                        },
+                    )
                     output = call_tool_with_tldr(
                         tool.function.name,
                         func_entry["function"],
@@ -108,6 +171,14 @@ def generate_content(prompt: str) -> str:
         reply = response.message.content
         history.append({"role": "assistant", "content": reply})
         _record_event("assistant", reply)
+        _debug_dump(
+            "assistant_reply",
+            {
+                "user_id": user_id,
+                "reply": reply,
+                "history_size": len(history),
+            },
+        )
         return reply
 
     except Exception as e:
@@ -158,15 +229,31 @@ def call_tool_with_tldr(
 ) -> str:
     raw_output = tool_callable(**arguments)
     raw_text = _format_tool_output(tool_name, raw_output)
+    _debug_dump(
+        "tool_raw_output",
+        {
+            "tool": tool_name,
+            "arguments": arguments,
+            "raw_output": raw_output,
+        },
+    )
 
     history.append({"role": "tool", "name": tool_name, "content": raw_text})
     logger.info(f"Tool {tool_name} output:\n{raw_text}")
+
     _record_event(
         "tool_call",
         f"{tool_name} completed",
         {
             "arguments": _stringify_data(arguments) if arguments else "{}",
             "output": raw_text,
+        },
+    )
+    _debug_dump(
+        "history_after_tool",
+        {
+            "tool": tool_name,
+            "history": history,
         },
     )
 
@@ -180,6 +267,13 @@ def call_tool_with_tldr(
         summary_text = summary
         logger.info(f"TLDR ready for {tool_name}: {summary_text}")
         _record_event("tldr", f"{tool_name}: {summary_text}")
+        _debug_dump(
+            "tldr_summary",
+            {
+                "tool": tool_name,
+                "summary": summary_text,
+            },
+        )
         history.append(
             {
                 "role": "assistant",
@@ -199,6 +293,13 @@ def call_tool_with_tldr(
                 }
             )
             _record_event("audio_queue", f"Queued TLDR audio for {tool_name}")
+            _debug_dump(
+                "audio_queue_payload",
+                {
+                    "tool": tool_name,
+                    "audio_script": audio_script,
+                },
+            )
         except Exception as audio_err:
             logger.error(f"Error building audio script for tool {tool_name}: {audio_err}")
 
@@ -270,10 +371,20 @@ def run_tool_direct(
 
     user_id = _get_or_create_user_id()
     history = user_histories.setdefault(user_id, [])
+    if not history or history[0].get("role") != "system":
+        history.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
     _record_event(
         "tool_request",
         f"Direct tool request: {tool_identifier}",
         {"parameters": _stringify_data(parameters)},
+    )
+    _debug_dump(
+        "direct_tool_request",
+        {
+            "tool": tool_identifier,
+            "parameters": parameters,
+            "history_size": len(history),
+        },
     )
     history.append(
         {
@@ -335,14 +446,28 @@ def translate_instruction_to_command(instruction: str) -> Optional[str]:
     if not instruction:
         return None
 
+    direct = detect_direct_command(instruction)
+    if direct:
+        _debug_dump("command_translation_direct", direct)
+        return direct
+
+    heuristic = heuristic_command(instruction)
+    if heuristic:
+        sanitized = sanitize_command(heuristic)
+        if sanitized:
+            _debug_dump("command_translation_heuristic", sanitized)
+            return sanitized
+
     messages = [
         {"role": "system", "content": COMMAND_TRANSLATOR_SYSTEM_PROMPT},
         {"role": "user", "content": instruction},
     ]
+    _debug_dump("command_translation_request", messages)
 
     try:
         response = chat(model=MODEL_NAME, messages=messages, keep_alive=0)
         command = (response.message.content or "").strip()
+        _debug_dump("command_translation_response", command)
 
         if command.lower().startswith("command:"):
             command = command.split(":", 1)[1].strip()
@@ -354,9 +479,13 @@ def translate_instruction_to_command(instruction: str) -> Optional[str]:
         if "\n" in command:
             command = command.splitlines()[0].strip()
 
-        command = command.strip("`\"'")
+        if command.upper() == "NONE":
+            return None
 
-        return command or None
+        sanitized = sanitize_command(command)
+        if sanitized:
+            _debug_dump("command_translation_sanitized", sanitized)
+        return sanitized
     except Exception as err:
         logger.error(f"Unable to translate instruction to command: {err}")
         return None
@@ -365,12 +494,14 @@ def translate_instruction_to_command(instruction: str) -> Optional[str]:
 def get_recent_history(limit: int = 15) -> List[Dict[str, Any]]:
     user_id = _get_or_create_user_id()
     history = user_histories.get(user_id, [])
+    _debug_dump("history_snapshot", {"user_id": user_id, "limit": limit, "history": history})
     if limit <= 0:
         return history
     return history[-limit:]
 
 
 def get_recent_events(limit: int = 20) -> List[Dict[str, Any]]:
+    _debug_dump("event_log_snapshot", {"limit": limit, "events": list(_event_log)})
     if limit <= 0:
         return list(_event_log)
     return list(_event_log)[-limit:]

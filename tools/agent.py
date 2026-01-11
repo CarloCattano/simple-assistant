@@ -1,25 +1,50 @@
 import subprocess
 
+from utils.command_guard import sanitize_command
+
 
 def shell_agent(prompt):
     try:
-        print(f"Executing shell command: {prompt}")
+        sanitized = sanitize_command(prompt)
+        if not sanitized:
+            return {
+                "command": prompt,
+                "exit_code": -1,
+                "stdout": "",
+                "stderr": "Command rejected as unsafe or invalid.",
+            }
 
-        completed = subprocess.run(prompt, shell=True, capture_output=True, text=True)
+        print(f"Executing shell command: {sanitized}")
+
+        completed = subprocess.run(
+            sanitized,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
 
         stdout = (completed.stdout or "").strip()
         stderr = (completed.stderr or "").strip()
 
         return {
-            "command": prompt,
+            "command": sanitized,
             "exit_code": completed.returncode,
             "stdout": stdout,
             "stderr": stderr,
         }
 
+    except subprocess.TimeoutExpired:
+        return {
+            "command": sanitized if "sanitized" in locals() else prompt,
+            "exit_code": -1,
+            "stdout": "",
+            "stderr": "Command timed out after 20 seconds.",
+        }
+        
     except Exception as e:
         return {
-            "command": prompt,
+            "command": sanitized if "sanitized" in locals() else prompt,
             "exit_code": -1,
             "stdout": "",
             "stderr": str(e),

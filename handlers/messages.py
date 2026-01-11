@@ -250,6 +250,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, *ar
         await respond_in_mode(update.message, context, user_text, generated_content)
 
 
+async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    edited = update.edited_message
+    if not edited or not edited.text:
+        return
+
+    log_user_action("edited_text", update, edited.text)
+
+    if LLM_PROVIDER == "gemini":
+        generated_content = handle_user_message(edited.from_user.id, edited.text)
+        await respond_in_mode(edited, context, edited.text, generated_content)
+    elif LLM_PROVIDER == "ollama":
+        generated_content = generate_content(edited.text)
+        await respond_in_mode(edited, context, edited.text, generated_content)
+
+
 def _extract_tool_request(text: str):
     if not text:
         return None
@@ -305,12 +320,20 @@ def _parse_tool_directive(text: str):
     value = remaining
     if param_name == "prompt" and translate_instruction_to_command:
         translated = translate_instruction_to_command(remaining)
+
+        logger.error(f"Translated instruction to command: {translated}")
+
         if not translated:
             raise ToolDirectiveError("Couldn't translate request into a shell command. Please send the exact command instead.")
 
         cleaned = translated.strip()
+        cleaned = cleaned.strip('"')
+        if not cleaned:
+            raise ToolDirectiveError("Command translation returned an empty result.")
+
         normalized = cleaned.lower()
         default_normalized = remaining.lower()
+        logger.error(f"Normalized command: {normalized}")
         common_prefixes = (
             "sudo",
             "ls",
@@ -348,6 +371,7 @@ def _parse_tool_directive(text: str):
             "journalctl",
             "tar",
             "zip",
+            "ping",
             "unzip",
         )
 

@@ -5,14 +5,29 @@ from telegram.ext import ContextTypes
 from telegramify_markdown import markdownify
 
 from config import ADMIN_ID, LLM_PROVIDER
-from handlers.messages import send_chunked_message, handle_message
+from handlers.messages import (
+    ToolDirectiveError,
+    handle_message,
+    respond_in_mode,
+    send_chunked_message,
+)
 from services.gemini import clear_conversations, handle_user_message
 try:
-    from services.ollama import clear_history, get_recent_events, get_recent_history
+    from services.ollama import (
+        clear_history,
+        get_recent_events,
+        get_recent_history,
+        resolve_tool_identifier,
+        run_tool_direct,
+        translate_instruction_to_command,
+    )
 except ImportError:  # Optional dependency
     clear_history = None
     get_recent_events = None
     get_recent_history = None
+    resolve_tool_identifier = None
+    run_tool_direct = None
+    translate_instruction_to_command = None
 from services.tts import synthesize_speech
 from utils.logger import log_user_action
 
@@ -177,6 +192,34 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Help!")
 
 
+async def tool_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if LLM_PROVIDER != "ollama" or not run_tool_direct or not resolve_tool_identifier:
+        await update.message.reply_text(
+            "Tool execution is only available when the Ollama backend is active."
+        )
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: /tool <name> [arguments]")
+        return
+
+    tool_identifier = context.args[0]
+    remaining = " ".join(context.args[1:]).strip()
+
+    try:
+        tool_name, parameters = _resolve_tool_invocation(tool_identifier, remaining)
+    except ToolDirectiveError as directive_err:
+        await update.message.reply_text(str(directive_err))
+        return
+
+    result = run_tool_direct(tool_name, parameters)
+    if result is None:
+        await update.message.reply_text("Unknown or unavailable tool.")
+        return
+
+    await respond_in_mode(update.message, context, f"/tool {tool_identifier}", result)
+
+
 async def clear_user_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.warn(f"Clearing history for {update.effective_user}")
 
@@ -220,6 +263,98 @@ async def show_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     formatted = "\n".join(_format_event_entry(event) for event in events)
     await send_chunked_message(update.message, formatted, parse_mode=None)
+
+
+def _resolve_tool_invocation(tool_identifier: str, args_text: str):
+    if not resolve_tool_identifier:
+        raise ToolDirectiveError("Tool execution is not available in this configuration.")
+
+    resolved = resolve_tool_identifier(tool_identifier)
+    if not resolved:
+        raise ToolDirectiveError(f"Unknown tool '{tool_identifier}'.")
+
+    resolved_name, entry = resolved
+    parameters_def = entry.get("parameters", {}) or {}
+
+    if not parameters_def:
+        if args_text:
+            raise ToolDirectiveError("This tool does not accept arguments.")
+        return resolved_name, {}
+
+    if len(parameters_def) != 1:
+        raise ToolDirectiveError("Tool requires structured JSON parameters.")
+
+    param_name = next(iter(parameters_def))
+
+    if not args_text:
+        raise ToolDirectiveError("Provide the arguments needed for this tool call.")
+
+    value = args_text
+    if param_name == "prompt" and translate_instruction_to_command:
+        translated = translate_instruction_to_command(args_text)
+        if not translated:
+            raise ToolDirectiveError(
+                "Couldn't translate request into a shell command. Please send the exact command instead."
+            )
+
+        cleaned = translated.strip().strip('"')
+        if not cleaned:
+            raise ToolDirectiveError("Command translation returned an empty result.")
+
+        normalized = cleaned.lower()
+        default_normalized = args_text.lower()
+        common_prefixes = (
+            "cat",
+            "cd",
+            "chmod",
+            "chown",
+            "cp",
+            "curl",
+            "df",
+            "docker",
+            "du",
+            "find",
+            "git",
+            "grep",
+            "head",
+            "htop",
+            "journalctl",
+            "kill",
+            "ls",
+            "mkdir",
+            "mv",
+            "node",
+            "npm",
+            "ping",
+            "pip",
+            "ps",
+            "pwd",
+            "python",
+            "rm",
+            "service",
+            "sudo",
+            "systemctl",
+            "tail",
+            "tar",
+            "top",
+            "touch",
+            "unzip",
+            "wget",
+            "whoami",
+            "zip",
+        )
+
+        if not normalized or (
+            normalized == default_normalized
+            and not normalized.startswith(common_prefixes)
+        ):
+            raise ToolDirectiveError(
+                f"I couldn't infer a valid shell command for {args_text}. Please send the exact command to run."
+            )
+
+        value = cleaned
+
+    return resolved_name, {param_name: value}
 
 
 def _is_admin(update: Update) -> bool:

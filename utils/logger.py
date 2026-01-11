@@ -38,3 +38,6 @@ def info(msg: str):
 
 def warn(msg: str):
     logger.warning(msg)
+
+def debug(msg: str):
+    logger.debug(msg)

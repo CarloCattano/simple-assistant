@@ -32,10 +32,11 @@ CONTENT_REPORTER_SCRIPT_PROMPT = (
 )
 
 COMMAND_TRANSLATOR_SYSTEM_PROMPT = (
-    "You convert natural language requests into a single Linux shell command. "
+    "You convert natural language requests into a single Linux shell commands. "
     "Do not replace literal shell commands that the user already wrote with similar ones. "
     "Respond ONLY with the exact command, making sure any quotes are properly closed "
-    "(for example: echo \"Hello World\"). "
+    "(for example: echo \"Hello World\"). Always close every opening quote character; "
+    "never leave a string unterminated. "
     "Do not add commentary, shell prompts, explanations, or additional lines. "
     "For requests about listing or inspecting files or directories, prefer safe commands such as 'ls', 'ls -lah', 'ls -lt', or 'find'. "
     "For requests about controlling music playback, prefer 'playerctl' subcommands like 'playerctl play', 'playerctl pause', 'playerctl next', or 'playerctl previous'. "
@@ -579,6 +580,21 @@ def get_last_command_translation_error() -> Optional[str]:
     return _last_command_translation_error
 
 
+def _maybe_fix_unclosed_quotes(command: str) -> Optional[str]:
+    """Best-effort fix for commands that only fail due to an unclosed quote.
+
+    This is used only for LLM-suggested commands in translate_instruction_to_command,
+    never for raw user input. If we detect an odd number of single or double quotes,
+    we append the missing closing quote and let sanitize_command re-validate.
+    """
+
+    text = command or ""
+    for quote in ('"', "'"):
+        if text.count(quote) % 2 == 1:
+            return text + quote
+    return None
+
+
 def translate_instruction_to_command(instruction: str) -> Optional[str]:
     instruction = (instruction or "").strip()
     if not instruction:
@@ -616,7 +632,7 @@ def translate_instruction_to_command(instruction: str) -> Optional[str]:
         if command.lower().startswith("command:"):
             command = command.split(":", 1)[1].strip()
 
-        for fence in ("```", "'''", '"', "'"):
+        for fence in ("```", "'''", "`", '"', "'"):
             if command.startswith(fence) and command.endswith(fence):
                 command = command[len(fence) : -len(fence)].strip()
 
@@ -637,9 +653,16 @@ def translate_instruction_to_command(instruction: str) -> Optional[str]:
             _set_last_command_translation_error(None)
             return sanitized
 
-        # If the command was rejected by sanitize_command (for example due to pipes
-        # or other shell operators), try to keep only the leading simple command
-        # segment before any such operators and sanitize that instead.
+        sanitize_reason = get_last_sanitize_error() or ""
+        if "No closing quotation" in sanitize_reason:
+            fixed = _maybe_fix_unclosed_quotes(command)
+            if fixed and fixed != command:
+                fixed_sanitized = sanitize_command(fixed)
+                if fixed_sanitized:
+                    _debug_dump("command_translation_quote_fix", fixed_sanitized)
+                    _set_last_command_translation_error(None)
+                    return fixed_sanitized
+
         segments = re.split(r"[;&|]", command, maxsplit=1)
         leading = segments[0].strip() if segments else ""
         if leading and leading != command:

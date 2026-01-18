@@ -364,7 +364,9 @@ async def show_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     formatted = "\n".join(_format_history_entry(entry) for entry in entries)
-    await send_chunked_message(update.message, formatted, )
+    # History entries may contain arbitrary characters that break MarkdownV2;
+    # send them as plain text.
+    await send_chunked_message(update.message, formatted, parse_mode=None)
 
 
 async def show_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -386,7 +388,9 @@ async def show_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     formatted = "\n".join(_format_event_entry(event) for event in events)
-    await send_chunked_message(update.message, formatted)
+    # Event payloads often contain characters like ']' that conflict with
+    # Telegram's MarkdownV2 parsing. Send as plain text.
+    await send_chunked_message(update.message, formatted, parse_mode=None)
 
 
 def _resolve_tool_invocation(tool_identifier: str, args_text: str):

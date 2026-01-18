@@ -104,7 +104,7 @@ def _parse_tool_directive(text: str) -> Optional[Tuple[str, Dict[str, Any]]]:
 
             raise ToolDirectiveError(base_msg)
 
-        cleaned = translated.strip().strip('"')
+        cleaned = translated.strip()
         if not cleaned:
             raise ToolDirectiveError("Command translation returned an empty result.")
 

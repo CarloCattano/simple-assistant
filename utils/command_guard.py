@@ -158,6 +158,12 @@ def detect_direct_command(instruction: str) -> Optional[str]:
     if not text:
         return None
 
+    # Multi-line instructions (often containing explanatory context like
+    # "Previous command: ...") should not be treated as literal commands.
+    # Let the LLM translator handle those instead.
+    if "\n" in text:
+        return None
+
     # Quick detection for literal commands.
     direct = sanitize_command(text)
     if direct:

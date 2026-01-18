@@ -1,13 +1,57 @@
-from config import LLM_PROVIDER
-from services.gemini import generate_content as generate_from_gemini
-from services.ollama import generate_content as generate_from_olama
+from typing import Callable, Optional
+import logging
 
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-def generate_content(prompt: str, source: str = str(LLM_PROVIDER)) -> str:
-    source = source.lower()
-    if source == "gemini":
-        return generate_from_gemini(prompt)
-    elif source == "ollama":
-        return generate_from_olama(prompt)
-    else:
-        return f"Unknown source: {source}"
+LLM_PROVIDER = "ollama"
+GEMINI_SOURCE = "gemini"
+OLLAMA_SOURCE = "ollama"
+
+def load_ollama_generator() -> Optional[Callable[[str], str]]:
+    """
+    Loads the Ollama generator from services.ollama.
+    
+    Returns:
+        Callable[[str], str]: The loaded Ollama generator function, or None if loading fails.
+    """
+    try:
+        import services.ollama
+        ollama_generator = services.ollama.generate_content
+    except ImportError as e:
+        logger.error("Ollama service is not available: %s", e)
+        return None
+    return ollama_generator
+
+def generate_content(prompt: str, source: Optional[str] = LLM_PROVIDER) -> str:
+    """
+    Generates content based on the provided prompt and source.
+    
+    Args:
+        prompt (str): The input prompt to generate content from.
+        source (Optional[str]): The source to use for generating content. Defaults to LLM_PROVIDER.
+    
+    Returns:
+        str: The generated content, or an error message if generation fails.
+    """
+    provider = source.strip().lower()
+    if provider == GEMINI_SOURCE:
+        try:
+            return generate_from_gemini(prompt)
+        except Exception as e:
+            logger.error("Error generating content from Gemini: %s", e)
+            return f"Error from Gemini: {e}"
+    elif provider == OLLAMA_SOURCE:
+        try:
+            ollama_generator = load_ollama_generator()
+            if ollama_generator:
+                return ollama_generator(prompt)
+            else:
+                logger.error("Failed to load Ollama generator")
+                return f"Failed to load Ollama generator"
+        except Exception as e:
+            logger.error("Error generating content from Ollama: %s", e)
+            return f"Error from Ollama: {e}"
+    return f"Unknown source: {provider or 'unspecified'}"
+

@@ -1,5 +1,7 @@
+from typing import List, Tuple
 from urllib.parse import quote
-from httpx import Client
+
+from httpx import Client, RequestError
 from parsel import Selector
 from utils.logger import logger
 
@@ -16,32 +18,33 @@ client = Client(
     },
     follow_redirects=True,
     http2=True,
+    timeout=5.0,
 )
 
+def web_search(query: str) -> str:
+    query = (query or "").strip()
+    if not query:
+        return "Please provide a non-empty search query."
 
-def web_search(query):
-    print(f"Performing web search for query: {query}")
     logger.info(f"Performing web search for query: {query}")
-    base_url = "https://html.duckduckgo.com/html/?q="
-    response = client.get(f"{base_url}{quote(query)}")
 
-    if response.status_code != 200:
-        return f"Error: Received status code {response.status_code} for {base_url}"
+    # Primary provider: DuckDuckGo HTML
+    try:
+        summary, links = _search_duckduckgo(query)
+        if summary or links:
+            return _format_search_result(summary, links)
+    except Exception as err:
+        logger.error(f"DuckDuckGo search failed for {query!r}: {err}")
 
-    selector = Selector(text=response.text)
-    _remove_kl_dropdown(selector)
+    # Fallback provider: DuckDuckGo lite HTML endpoint (no API key needed).
+    try:
+        summary, links = _search_duckduckgo_lite(query)
+        if summary or links:
+            return _format_search_result(summary, links)
+    except Exception as err:
+        logger.error(f"DuckDuckGo lite search failed for {query!r}: {err}")
 
-    snippets = _extract_snippets(selector)
-    links = _extract_links(selector)
-
-    summary = _truncate_text(" ".join(snippets).strip())
-    output = [summary]
-
-    if links:
-        output.append("\nLinks:")
-        output.extend(links[:MAX_LINKS])
-
-    return "\n".join(output).strip()
+    return "I couldn't retrieve search results at the moment. Please try again later."
 
 
 tool = {
@@ -53,6 +56,31 @@ tool = {
         'query': {'type': 'string', 'description': 'Search query string'},
     },
 }
+
+
+def _search_duckduckgo(query: str) -> Tuple[str, List[str]]:
+    base_url = "https://html.duckduckgo.com/html/?q="
+    url = f"{base_url}{quote(query)}"
+    try:
+        response = client.get(url)
+    except RequestError as err:
+        logger.error(f"HTTP error contacting DuckDuckGo: {err}")
+        return "", []
+
+    if response.status_code != 200:
+        logger.warning(
+            f"DuckDuckGo returned status {response.status_code} for {url}"
+        )
+        return "", []
+
+    selector = Selector(text=response.text)
+    _remove_kl_dropdown(selector)
+
+    snippets = _extract_snippets(selector)
+    links = _extract_links(selector)
+
+    summary = _truncate_text(" ".join(snippets).strip()) if snippets else ""
+    return summary, links
 
 
 def _remove_kl_dropdown(selector: Selector) -> None:
@@ -92,6 +120,9 @@ def _clean_link(link: str) -> str:
     if not stripped or stripped.endswith("/html/"):
         return ""
 
+    if stripped.startswith("/html/?") or stripped.startswith("html/?"):
+        return ""
+
     stripped = stripped.replace("https://", "").replace("http://", "")
     stripped = stripped.replace("//", "")
 
@@ -107,3 +138,49 @@ def _truncate_text(text: str, max_chars: int = MAX_TEXT_CHARS) -> str:
 
     truncated = text[:max_chars].rsplit(" ", 1)[0]
     return f"{truncated}\n\n[Output truncated]"
+
+
+def _format_search_result(summary: str, links: List[str]) -> str:
+    """Pretty-print search results with spacing and simple Markdown.
+
+    The summary is shown first, followed by a "Links:" section where each
+    result URL is rendered as a bullet point. This keeps the output readable
+    on Telegram while remaining plain-text friendly.
+    """
+    parts: List[str] = []
+    summary = (summary or "").strip()
+    if summary:
+        parts.append(summary)
+
+    if links:
+        if parts:
+            parts.append("")  # blank line before links section
+        parts.append("**Links:**")
+        for link in links[:MAX_LINKS]:
+            parts.append(f"- {link}")
+
+    return "\n".join(parts).strip() or "No results found."
+
+
+def _search_duckduckgo_lite(query: str) -> Tuple[str, List[str]]:
+    """Fallback search using DuckDuckGo's lite HTML endpoint (no API key)."""
+    base_url = "https://lite.duckduckgo.com/lite/?q="
+    url = f"{base_url}{quote(query)}"
+    try:
+        response = client.get(url)
+    except RequestError as err:
+        logger.error(f"HTTP error contacting DuckDuckGo lite: {err}")
+        return "", []
+
+    if response.status_code != 200:
+        logger.warning(
+            f"DuckDuckGo lite returned status {response.status_code} for {url}"
+        )
+        return "", []
+
+    selector = Selector(text=response.text)
+    snippets = _extract_snippets(selector)
+    links = _extract_links(selector)
+
+    summary = _truncate_text(" ".join(snippets).strip()) if snippets else ""
+    return summary, links

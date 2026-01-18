@@ -30,6 +30,14 @@ python bot.py
 
 ```
 
+### Shell Agent Tool
+
+The project exposes a shell agent that translates natural language requests to safe commands via the Telegram bot.
+
+- Ensure the bot is running and send a chat message prefixed with `cmd:` (for example, `cmd: list the repo root`).
+- The agent removes shell prompt prefixes, sanitizes the instruction, and when needed calls the optional Ollama translator before execution.
+- Execution results include the final command, stdout, stderr, and a `command_trace` describing each derivation step; these details are logged to `usage.log`.
+- Set `LLM_PROVIDER=ollama` and provide a compatible translator model if you want LLM-backed rewrites of complex prompts.
 
 
 

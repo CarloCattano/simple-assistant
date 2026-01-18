@@ -13,6 +13,21 @@ from config import GEMINI_KEY
 logger = logging.getLogger(__name__)
 
 
+TTS_MODEL = "gemini-2.5-flash-preview-tts"
+TTS_URL = (
+    "https://generativelanguage.googleapis.com/v1beta/models/"
+    f"{TTS_MODEL}:generateContent"
+)
+
+DEFAULT_TTS_OUTPUT = "tts.raw"
+TTS_TIMEOUT_SECONDS = 30
+
+VOICE_NAME = "Kore"
+CHANNELS = 1  # mono
+SAMPLE_WIDTH_BYTES = 2  # 16-bit samples
+SAMPLE_RATE_HZ = 24000  # 24 kHz
+
+
 def clean_text_for_tts(text: str) -> str:
     text = html.unescape(text)
     text = re.sub(r"[^a-zA-Z0-9\s.,?!:]", "", text)
@@ -22,9 +37,7 @@ def clean_text_for_tts(text: str) -> str:
     return text.strip()
 
 
-def _generate_tts_file(text: str, output_filename: str = "tts.raw") -> Optional[str]:
-    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent"
-
+def _generate_tts_file(text: str, output_filename: str = DEFAULT_TTS_OUTPUT) -> Optional[str]:
     text = clean_text_for_tts(text)
 
     body = {
@@ -32,10 +45,12 @@ def _generate_tts_file(text: str, output_filename: str = "tts.raw") -> Optional[
         "generationConfig": {
             "responseModalities": ["AUDIO"],
             "speechConfig": {
-                "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": "Kore"}}
+                "voiceConfig": {
+                    "prebuiltVoiceConfig": {"voiceName": VOICE_NAME}
+                }
             },
         },
-        "model": "gemini-2.5-flash-preview-tts",
+        "model": TTS_MODEL,
     }
 
     try:
@@ -44,7 +59,12 @@ def _generate_tts_file(text: str, output_filename: str = "tts.raw") -> Optional[
             "x-goog-api-key": GEMINI_KEY,
         }
 
-        response = requests.post(url, headers=headers, json=body, timeout=30)
+        response = requests.post(
+            TTS_URL,
+            headers=headers,
+            json=body,
+            timeout=TTS_TIMEOUT_SECONDS,
+        )
         response.raise_for_status()
 
         data = response.json()
@@ -64,9 +84,9 @@ def _generate_tts_file(text: str, output_filename: str = "tts.raw") -> Optional[
         output_filename = output_filename.replace(".raw", ".wav")
 
         with wave.open(output_filename, "wb") as wf:
-            wf.setnchannels(1)  # mono
-            wf.setsampwidth(2)  # 16-bit samples
-            wf.setframerate(24000)  # 24 kHz
+            wf.setnchannels(CHANNELS)
+            wf.setsampwidth(SAMPLE_WIDTH_BYTES)
+            wf.setframerate(SAMPLE_RATE_HZ)
             wf.writeframes(pcm_data)
 
         return output_filename
@@ -76,9 +96,9 @@ def _generate_tts_file(text: str, output_filename: str = "tts.raw") -> Optional[
         return None
 
 
-async def synthesize_speech(text: str, output_filename: str = "tts.raw"):
+async def synthesize_speech(text: str, output_filename: str = DEFAULT_TTS_OUTPUT):
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _generate_tts_file, text, output_filename)
 
-def synthesize_speech_sync(text: str, output_filename: str = "tts.raw") -> Optional[str]:
+def synthesize_speech_sync(text: str, output_filename: str = DEFAULT_TTS_OUTPUT) -> Optional[str]:
     return _generate_tts_file(text, output_filename)

@@ -4,11 +4,26 @@ import pkgutil
 def load_tools():
     tool_registry = {}
 
-    # Dynamically import all modules in the 'tools' package
     for _, module_name, _ in pkgutil.iter_modules(__path__):
         mod = importlib.import_module(f".{module_name}", package=__name__)
-        if hasattr(mod, "tool"):
-            tool_func_name = mod.tool['function'].__name__
-            tool_registry[tool_func_name] = mod.tool
+
+        if not hasattr(mod, "tool"):
+            continue
+
+        # Check if tool is a dictionary
+        if isinstance(mod.tool, dict) and "function" in mod.tool:
+            func_name = mod.tool['function'].__name__
+            tool_registry[func_name] = mod.tool
+        elif callable(mod.tool):
+            # If the tool is just a function, wrap it in a dict
+            func_name = mod.tool.__name__
+            tool_registry[func_name] = {
+                "name": func_name,
+                "function": mod.tool,
+                "triggers": []
+            }
+        else:
+            print(f"Warning: {module_name}.tool is neither dict nor function, skipping.")
 
     return tool_registry
+

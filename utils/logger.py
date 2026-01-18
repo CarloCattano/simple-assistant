@@ -12,8 +12,10 @@ logger = logging.getLogger("usage")
 handler = logging.FileHandler("usage.log")
 formatter = logging.Formatter("%(asctime)s - %(message)s")
 handler.setFormatter(formatter)
+handler.setLevel(logging.DEBUG)
 logger.addHandler(handler)
-logger.setLevel(logging.WARN)
+
+logger.setLevel(logging.DEBUG)
 
 
 def log_user_action(action: str, update: Update, extra: str = ""):

@@ -7,18 +7,24 @@ import requests
 from config import GEMINI_KEY, SYSTEM_PROMPT
 from utils.logger import RED_COL, RST
 
+
 MODEL_NAME = "gemini-1.5-flash-latest"
-API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={GEMINI_KEY}"
+API_URL = (
+    f"https://generativelanguage.googleapis.com/v1beta/models/"
+    f"{MODEL_NAME}:generateContent?key={GEMINI_KEY}"
+)
 
 CONVERSATION_FILE = "user_conversations.json"
+MAX_CONVERSATIONS = 40
+TRIM_TO = 20
 
 
 def save_conversations():
     # if logs grow bigger than 40 elements, pop the odest out
     global user_conversations
-    if len(user_conversations) > 40:
+    if len(user_conversations) > MAX_CONVERSATIONS:
         print(f"{RED_COL}Trimming logs{RST} ")
-        keys_to_remove = list(user_conversations.keys())[: len(user_conversations) - 20]
+        keys_to_remove = list(user_conversations.keys())[: len(user_conversations) - TRIM_TO]
         for key in keys_to_remove:
             del user_conversations[key]
 

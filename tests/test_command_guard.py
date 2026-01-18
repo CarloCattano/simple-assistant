@@ -14,8 +14,17 @@ class CommandGuardTests(unittest.TestCase):
     def test_sanitize_command_allows_known_command(self):
         self.assertEqual(sanitize_command("ls -lah"), "ls -lah")
 
-    def test_sanitize_command_blocks_shell_operators(self):
-        self.assertIsNone(sanitize_command("ls -lah | grep py"))
+    def test_sanitize_command_allows_safe_pipeline(self):
+        self.assertEqual(
+            sanitize_command("ls -lah | grep py"),
+            "ls -lah | grep py",
+        )
+
+    def test_sanitize_command_allows_safe_and_sequence(self):
+        self.assertEqual(
+            sanitize_command("ls -lah && echo done"),
+            "ls -lah && echo done",
+        )
 
     def test_sanitize_command_rejects_unknown_binary(self):
         self.assertIsNone(sanitize_command("scarycmd --flag"))

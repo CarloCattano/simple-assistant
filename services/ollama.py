@@ -3,10 +3,12 @@ import threading
 import uuid
 from collections import deque
 from datetime import datetime
-from logging import DEBUG
+from logging import DEBUG, Logger
 from typing import Any, Dict, List, Optional, Tuple
 
-from ollama import chat
+import os
+import re
+from ollama import chat as _ollama_chat
 from tools import load_tools
 from config import SYSTEM_PROMPT
 from utils import logger
@@ -14,7 +16,13 @@ from utils.command_guard import (
     detect_direct_command,
     heuristic_command,
     sanitize_command,
+    get_last_sanitize_error,
 )
+
+if hasattr(_ollama_chat, "chat"):
+    chat = _ollama_chat.chat
+else:
+    chat = _ollama_chat
 
 CONTENT_REPORTER_SCRIPT_PROMPT = (
     "Rewrite that summary into two energetic, fast-paced sentences that stay factually accurate,"
@@ -24,11 +32,23 @@ CONTENT_REPORTER_SCRIPT_PROMPT = (
 )
 
 COMMAND_TRANSLATOR_SYSTEM_PROMPT = (
-    "You convert natural language requests into a single Linux shell command.Do not replace original command strings with similar ones."
-    " Respond ONLY with the exact command, making sure any quotes are properly closed"
-    " (for example: echo \"Hello World\")."
-    " Do not add commentary, shell prompts, explanations, or additional lines."
-    " If the request is ambiguous or unsafe, respond with the single word NONE."
+    "You convert natural language requests into a single Linux shell command. "
+    "Do not replace literal shell commands that the user already wrote with similar ones. "
+    "Respond ONLY with the exact command, making sure any quotes are properly closed "
+    "(for example: echo \"Hello World\"). "
+    "Do not add commentary, shell prompts, explanations, or additional lines. "
+    "For requests about listing or inspecting files or directories, prefer safe commands such as 'ls', 'ls -lah', 'ls -lt', or 'find'. "
+    "For requests about controlling music playback, prefer 'playerctl' subcommands like 'playerctl play', 'playerctl pause', 'playerctl next', or 'playerctl previous'. "
+    "If the request could reasonably be mapped to a read-only command using these tools, you MUST output that command instead of NONE. "
+    "Only respond with the single word NONE when it is impossible to infer any safe, non-destructive command."
+)
+
+QUERY_TRANSLATOR_SYSTEM_PROMPT = (
+    "You receive a user follow-up or instruction plus optional context."
+    " Rewrite it into a single concise web search query that will retrieve the requested information."
+    " If the user refers to doing the same thing as before, infer the subject from the context provided."
+    " Respond with only the search query text—no explanations, quotes, prefixes, or extra lines."
+    " If you cannot produce a reasonable query, respond with the single word NONE."
 )
 
 # Internal global mapping of thread/session -> UUID
@@ -38,6 +58,8 @@ _thread_local = threading.local()
 user_histories: Dict[str, List[Dict[str, str]]] = {}
 
 MODEL_NAME = "llama3.2"
+
+MAX_HISTORY_LENGTH = 40
 
 available_functions = load_tools()
 
@@ -50,16 +72,21 @@ TOOL_MODE = False
 EVENT_LOG_LIMIT = 200
 MAX_EVENT_TEXT = 400
 
+OLLAMA_URL = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
+
 _event_log: deque[Dict[str, Any]] = deque(maxlen=EVENT_LOG_LIMIT)
+
+_last_command_translation_error: Optional[str] = None
 
 
 def _debug_dump(label: str, payload: Any) -> None:
     log_instance = getattr(logger, "logger", None)
-    if log_instance is not None:
+    if isinstance(log_instance, Logger):
         if not log_instance.isEnabledFor(DEBUG):
             return
-    elif hasattr(logger, "isEnabledFor"):
-        if not logger.isEnabledFor(DEBUG):
+    elif isinstance(logger, Logger):
+        log_instance = logger
+        if not log_instance.isEnabledFor(DEBUG):
             return
     else:
         return
@@ -69,10 +96,10 @@ def _debug_dump(label: str, payload: Any) -> None:
     except (TypeError, ValueError):
         serialized = repr(payload)
 
-    if hasattr(logger, "debug"):
-        logger.debug(f"[debug] {label}: {serialized}")
-    elif log_instance is not None:
+    if log_instance is not None:
         log_instance.debug(f"[debug] {label}: {serialized}")
+    elif hasattr(logger, "debug"):
+        logger.debug(f"[debug] {label}: {serialized}")
 
 
 def evaluate_tool_usage(prompt: str) -> Tuple[bool, Dict[str, dict]]:
@@ -100,6 +127,7 @@ def generate_content(prompt: str) -> str:
 
     # Add user message
     history.append({"role": "user", "content": prompt})
+    _trim_history(history)
     _record_event("user", prompt)
     _debug_dump(
         "history_after_user",
@@ -193,7 +221,7 @@ def tldr_tool_output(tool_name: str, output: str) -> str:
         },
         {
             "role": "user",
-            "content": "Summarize the key points in no more than two sentences.",
+            "content": "Summarize the key points in no more than three sentences.",
         },
     ]
     response = chat(model=MODEL_NAME, messages=messages, keep_alive=0)
@@ -207,7 +235,7 @@ def build_audio_script(summary_text: str) -> Optional[str]:
             {"role": "system", "content": SYSTEM_PROMPT},
             {
                 "role": "assistant",
-                "content": f"Here is the TLDR summary you produced earlier: {summary_text}",
+                "content": f"Here is the summary you produced earlier: {summary_text}",
             },
             {
                 "role": "user",
@@ -227,13 +255,94 @@ def call_tool_with_tldr(
     history: List[Dict[str, str]],
     **arguments,
 ) -> str:
-    raw_output = tool_callable(**arguments)
+    working_arguments = dict(arguments)
+
+    from services.ollama import translate_instruction_to_query
+
+    if (
+        tool_name == "web_search"
+        and translate_instruction_to_query
+        and isinstance(working_arguments.get("query"), str)
+    ):
+        query = working_arguments["query"].strip()
+        if query:
+            translated = translate_instruction_to_query(query)
+            if not translated:
+                logger.warn("Query translation failed for web_search; aborting tool call.")
+                return "I couldn't infer a web search query from that request."
+            working_arguments["query"] = translated
+    # For the shell_agent, we support a small number of safe retry attempts
+    # where we let the LLM suggest alternative commands after failures.
+    raw_output: Any
+    if tool_name == "shell_agent":
+        max_attempts = 3
+        attempt = 0
+        last_output: Any = None
+
+        from services.ollama import translate_instruction_to_command
+
+        while attempt < max_attempts:
+            attempt += 1
+            last_output = tool_callable(**working_arguments)
+
+            # shell_agent is expected to return a dict; if it doesn't,
+            # just break and use whatever we got.
+            if not isinstance(last_output, dict):
+                break
+
+            exit_code = last_output.get("exit_code")
+            stderr = (last_output.get("stderr") or "").strip()
+            stdout = (last_output.get("stdout") or "").strip()
+
+            # Consider it a hard failure if the exit code is non-zero.
+            has_error = exit_code not in (0, None)
+
+            # Also treat purely-stderr outputs with common error wording as failures,
+            # even when the exit code is zero (many CLIs log to stderr).
+            lower_err = stderr.lower()
+            if not has_error and stderr and not stdout:
+                for marker in ("unknown option", "unrecognized option", "invalid option", "command not found"):
+                    if marker in lower_err:
+                        has_error = True
+                        break
+
+            if not has_error:
+                break
+
+            # If we cannot translate instructions to a new command, or if we
+            # don't have a textual prompt to refine, stop retrying.
+            original_prompt = working_arguments.get("prompt")
+            if not isinstance(original_prompt, str) or not translate_instruction_to_command:
+                break
+
+            # Ask the LLM for an alternative safe command, taking into account
+            # the previous failure. The translator will still run the result
+            # through sanitize_command.
+            context_instruction = (
+                f"{original_prompt}\n\n"
+                f"Previous command: {last_output.get('command')!r} "
+                f"returned exit_code={exit_code} with stderr: {stderr!r}. "
+                "Suggest a different safe single-line shell command that might succeed."
+            )
+
+            new_command = translate_instruction_to_command(context_instruction)
+            if not new_command or new_command == working_arguments.get("prompt"):
+                break
+
+            logger.info(
+                f"shell_agent retry {attempt}/{max_attempts}: refining command from {working_arguments.get('prompt')!r} to {new_command!r}"
+            )
+            working_arguments["prompt"] = new_command
+
+        raw_output = last_output
+    else:
+        raw_output = tool_callable(**working_arguments)
     raw_text = _format_tool_output(tool_name, raw_output)
     _debug_dump(
         "tool_raw_output",
         {
             "tool": tool_name,
-            "arguments": arguments,
+            "arguments": working_arguments,
             "raw_output": raw_output,
         },
     )
@@ -245,7 +354,7 @@ def call_tool_with_tldr(
         "tool_call",
         f"{tool_name} completed",
         {
-            "arguments": _stringify_data(arguments) if arguments else "{}",
+            "arguments": _stringify_data(working_arguments) if working_arguments else "{}",
             "output": raw_text,
         },
     )
@@ -256,6 +365,10 @@ def call_tool_with_tldr(
             "history": history,
         },
     )
+
+    if tool_name == "shell_agent":
+        logger.info("Skipping TLDR for shell_agent; returning raw tool output only.")
+        return raw_text
 
     summary = None
     try:
@@ -357,6 +470,20 @@ def _get_or_create_user_id() -> str:
     return _thread_local.user_id
 
 
+def _trim_history(history: List[Dict[str, str]]) -> None:
+    """Trim conversation history to a bounded length while preserving system prompt.
+
+    Keeps the first entry (typically the system prompt) and the most recent
+    MAX_HISTORY_LENGTH-1 messages.
+    """
+    if len(history) <= MAX_HISTORY_LENGTH:
+        return
+
+    system = history[0:1]
+    recent = history[-(MAX_HISTORY_LENGTH - 1) :]
+    history[:] = system + recent
+
+
 def run_tool_direct(
     tool_identifier: str, parameters: Optional[Dict[str, Any]] = None
 ) -> Optional[str]:
@@ -405,7 +532,7 @@ def run_tool_direct(
             f"Error executing direct tool {tool_identifier} with {parameters}: {err}"
         )
         return f"Error executing tool {tool_identifier}: {err}"
-
+    
 
 def _resolve_tool_entry(
     tool_identifier: str,
@@ -441,14 +568,30 @@ def resolve_tool_identifier(
     return _resolve_tool_entry(tool_identifier)
 
 
+def _set_last_command_translation_error(reason: Optional[str]) -> None:
+    global _last_command_translation_error
+    _last_command_translation_error = reason
+
+
+def get_last_command_translation_error() -> Optional[str]:
+    """Return a human-readable reason from the most recent command translation attempt, if any."""
+
+    return _last_command_translation_error
+
+
 def translate_instruction_to_command(instruction: str) -> Optional[str]:
     instruction = (instruction or "").strip()
     if not instruction:
+        _set_last_command_translation_error("instruction was empty")
         return None
+
+    _set_last_command_translation_error(None)
+    _debug_dump("command_translation_input", {"instruction": instruction})
 
     direct = detect_direct_command(instruction)
     if direct:
         _debug_dump("command_translation_direct", direct)
+        _set_last_command_translation_error(None)
         return direct
 
     heuristic = heuristic_command(instruction)
@@ -456,6 +599,7 @@ def translate_instruction_to_command(instruction: str) -> Optional[str]:
         sanitized = sanitize_command(heuristic)
         if sanitized:
             _debug_dump("command_translation_heuristic", sanitized)
+            _set_last_command_translation_error(None)
             return sanitized
 
     messages = [
@@ -480,14 +624,87 @@ def translate_instruction_to_command(instruction: str) -> Optional[str]:
             command = command.splitlines()[0].strip()
 
         if command.upper() == "NONE":
+            _debug_dump(
+                "command_translation_none",
+                {"instruction": instruction, "reason": "model_returned_NONE"},
+            )
+            _set_last_command_translation_error("model explicitly replied with NONE (no safe command)")
             return None
 
         sanitized = sanitize_command(command)
         if sanitized:
             _debug_dump("command_translation_sanitized", sanitized)
-        return sanitized
+            _set_last_command_translation_error(None)
+            return sanitized
+
+        # If the command was rejected by sanitize_command (for example due to pipes
+        # or other shell operators), try to keep only the leading simple command
+        # segment before any such operators and sanitize that instead.
+        segments = re.split(r"[;&|]", command, maxsplit=1)
+        leading = segments[0].strip() if segments else ""
+        if leading and leading != command:
+            fallback = sanitize_command(leading)
+            if fallback:
+                _debug_dump(
+                    "command_translation_sanitized_fallback",
+                    {
+                        "instruction": instruction,
+                        "raw_command": command,
+                        "fallback_command": fallback,
+                    },
+                )
+                _set_last_command_translation_error(
+                    "original suggestion looked unsafe; using only the leading simple command segment"
+                )
+                return fallback
+
+        sanitize_reason = get_last_sanitize_error() or "sanitize_command rejected the suggested command as unsafe"
+        _debug_dump(
+            "command_translation_rejected",
+            {
+                "instruction": instruction,
+                "raw_command": command,
+                "reason": sanitize_reason,
+            },
+        )
+        _set_last_command_translation_error(sanitize_reason)
+        return None
     except Exception as err:
         logger.error(f"Unable to translate instruction to command: {err}")
+        _set_last_command_translation_error(f"exception during translation: {err}")
+        return None
+
+
+def translate_instruction_to_query(instruction: str) -> Optional[str]:
+    instruction = (instruction or "").strip()
+    if not instruction:
+        return None
+
+    messages = [
+        {"role": "system", "content": QUERY_TRANSLATOR_SYSTEM_PROMPT},
+        {"role": "user", "content": instruction},
+    ]
+
+    _debug_dump("query_translation_request", messages)
+
+    try:
+        response = chat(model=MODEL_NAME, messages=messages, keep_alive=0)
+        query = (response.message.content or "").strip()
+        _debug_dump("query_translation_response", query)
+
+        if "\n" in query:
+            query = query.splitlines()[0].strip()
+
+        for fence in ("`", '"', "'"):
+            if query.startswith(fence) and query.endswith(fence):
+                query = query[len(fence) : -len(fence)].strip()
+
+        if query.upper() == "NONE":
+            return None
+
+        return query
+    except Exception as err:
+        logger.error(f"Unable to translate instruction to web query: {err}")
         return None
 
 
@@ -508,7 +725,7 @@ def get_recent_events(limit: int = 20) -> List[Dict[str, Any]]:
 
 
 def _record_event(kind: str, message: str, extra: Optional[Dict[str, Any]] = None) -> None:
-    entry = {
+    entry: Dict[str, Any] = {
         "time": datetime.utcnow().strftime("%H:%M:%S"),
         "kind": kind,
         "message": _truncate_event_text(message),

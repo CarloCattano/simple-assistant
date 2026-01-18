@@ -164,11 +164,8 @@ async def respond_in_mode(update_message, context, user_input, ai_output, *, too
                 parse_mode="Markdown",
             )
         elif is_web_search:
-            sent_messages = await send_chunked_message(
-                update_message,
-                ai_output,
-                parse_mode="Markdown",
-            )
+            reply = markdownify(ai_output)
+            sent_messages = await send_chunked_message(update_message, reply)
         else:
             reply = markdownify(ai_output)
             sent_messages = await send_chunked_message(update_message, reply)

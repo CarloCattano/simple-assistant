@@ -136,6 +136,7 @@ def _parse_tool_directive(text: str) -> Optional[Tuple[str, Dict[str, Any]]]:
             "docker",
             "curl",
             "wget",
+            "ifconfig",
             "top",
             "htop",
             "df",

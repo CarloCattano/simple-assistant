@@ -1,6 +1,9 @@
-from urllib.parse import quote
-from httpx import Client
+from httpx import Client, RequestError
 from parsel import Selector
+
+MAX_TEXT_CHARS = 2000
+MAX_LINKS = 20
+MAX_SNIPPET_LEN = 200
 
 client = Client(
     headers={
@@ -10,6 +13,7 @@ client = Client(
     },
     follow_redirects=True,
     http2=True,
+    timeout=5.0,
 )
 
 
@@ -17,7 +21,10 @@ def search_and_scrape(url):
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
 
-    response = client.get(url)
+    try:
+        response = client.get(url)
+    except RequestError as err:
+        return f"Error: HTTP error while fetching {url}: {err}"
 
     if response.status_code != 200:
         return f"Error: Received status code {response.status_code} for {url}"
@@ -37,12 +44,26 @@ def search_and_scrape(url):
             meta_tags[key] = content
 
     body_text_parts = sel.xpath("//body//text()").getall()
-    body_text = " \n".join(t.strip() for t in body_text_parts if t.strip())
+    snippets = []
+    total_len = 0
+    for t in body_text_parts:
+        stripped = t.strip()
+        if not stripped:
+            continue
+        if len(stripped) > MAX_SNIPPET_LEN:
+            stripped = stripped[:MAX_SNIPPET_LEN].rsplit(" ", 1)[0] + "…"
+        snippets.append(stripped)
+        total_len += len(stripped)
+        if total_len >= MAX_TEXT_CHARS:
+            break
+    body_text = " \n".join(snippets)
 
     links = []
     for link in sel.xpath("//a/@href").getall():
         if len(link) <= 80:
             links.append(link)
+        if len(links) >= MAX_LINKS:
+            break
 
     title = title.strip()
     body_text = body_text.strip()

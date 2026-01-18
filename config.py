@@ -1,8 +1,12 @@
 import os
 
-from dotenv import load_dotenv
+try:  # Optional in non-bot/test environments
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover - dotenv is only needed when a .env file is used
+    load_dotenv = None
 
-load_dotenv()
+if load_dotenv is not None:
+    load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")

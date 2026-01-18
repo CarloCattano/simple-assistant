@@ -4,17 +4,23 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 from telegramify_markdown import markdownify
 
-from config import ADMIN_ID, LLM_PROVIDER
+from config import LLM_PROVIDER
+from utils.auth import ADMIN_DENY_MESSAGE, is_admin
+from utils.history_state import (
+    get_prompt_history,
+    lookup_reply_context,
+    remember_prompt,
+)
 from handlers.messages import (
     handle_message,
     respond_in_mode,
     send_chunked_message,
     DEFAULT_MODE,
     MODE_AUDIO,
+    _merge_instructions_with_prompt,
 )
 from services.gemini import clear_conversations, handle_user_message
 from utils.tool_directives import (
-    REPROCESS_CONTROL_WORDS,
     ToolDirectiveError,
     derive_followup_tool_request as _derive_followup_tool_request,
 )
@@ -47,7 +53,19 @@ MAX_MESSAGE_LENGTH = 4096
 MAX_TTS_CAPTION_LENGTH = 1024
 
 ADMIN_ONLY_MESSAGE = "available to the admins only."
-HELP_TEXT = "Help!"
+HELP_TEXT = (
+    "Available commands:\n"
+    "/start  - Start interaction with the bot\n"
+    "/help   - Show this help message\n"
+    "/text   - Switch to Text mode\n"
+    "/audio  - Switch to Audio mode\n"
+    "/web    - Web search: /web <instruction>\n"
+    "/agent  - Shell agent: /agent <instruction>\n"
+    "/tool   - Use tools directly: /tool <name> [args]\n"
+    "/clear  - Clear conversation history\n"
+    "/history- Show recent conversation history\n"
+    "/flow   - Show recent tool flow events"
+)
 
 PROMPT_CHOOSE_MODE = (
     "Please choose your mode:\nType /audio for Audio mode or /text for Text mode."
@@ -74,14 +92,12 @@ TRIM_EVENT_EXTRA_CHARS = 120
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
-    if user.id == int(ADMIN_ID):
-        await update.message.reply_markdown(
-            f"Welcome back, sir {user.name}!",
-        )
-    else:
-        await update.message.reply_markdown(
-            f"Hi {user.name}! \n *THIS* is an _experimental_ private bot, please do not use *it*!",
-        )
+    if not _ensure_admin(update, update.message, context, markdown=True):
+        return
+
+    await update.message.reply_markdown(
+        f"Welcome back, sir {user.name}!",
+    )
 
     log_user_action("User used /start", update, user)
 
@@ -91,8 +107,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def transcribe_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not _is_admin(update):
-        await update.message.reply_text(ADMIN_ONLY_MESSAGE)
+    if not _ensure_admin(update, update.message, context):
         return
 
     await set_mode(update, context, DEFAULT_MODE)
@@ -117,8 +132,7 @@ async def transcribe_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_tts_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not _is_admin(update):
-        await update.message.reply_text(ADMIN_ONLY_MESSAGE)
+    if not _ensure_admin(update, update.message, context):
         return
 
     await set_mode(update, context, DEFAULT_MODE)
@@ -207,10 +221,9 @@ async def handle_prompt_decision(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def set_mode(update: Update, context: ContextTypes.DEFAULT_TYPE, mode: str):
-    if not _is_admin(update):
-        await update.message.reply_text(ADMIN_ONLY_MESSAGE)
+    if not _ensure_admin(update, update.message, context):
         return
-    await set_mode(update, context, DEFAULT_MODE)
+
     message_text = f"{mode} Mode activated."
 
     command = update.effective_message.text.split(" ", 1)
@@ -240,8 +253,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def tool_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not _is_admin(update):
-        await update.message.reply_text("Tool command is available to admins only.")
+    if not _ensure_admin(update, update.message, context, custom_message="Tool command is available to admins only."):
         return
 
     if LLM_PROVIDER != "ollama" or not run_tool_direct or not resolve_tool_identifier:
@@ -258,21 +270,13 @@ async def tool_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     instructions = " ".join(context.args[1:]).strip()
 
     message = update.effective_message
-    prompt_history = context.user_data.setdefault("prompt_history", {})
-    output_metadata = context.user_data.get("output_metadata") or {}
 
     derived_followup = None
     remaining = instructions
 
     if message and message.reply_to_message:
         reply_message = message.reply_to_message
-        original_prompt = prompt_history.get(reply_message.message_id)
-        if not original_prompt and reply_message.text:
-            original_prompt = reply_message.text.strip()
-
-        tool_metadata = (
-            output_metadata.get(reply_message.message_id) if output_metadata else None
-        )
+        original_prompt, tool_metadata = lookup_reply_context(context, reply_message)
 
         if tool_metadata:
             try:
@@ -321,8 +325,7 @@ async def tool_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if isinstance(first_value, str) and first_value.strip():
                 display_prompt = first_value.strip()
 
-    if message:
-        prompt_history[message.message_id] = display_prompt
+    remember_prompt(context, message, display_prompt)
 
     result = run_tool_direct(tool_name, parameters)
     if result is None:
@@ -338,18 +341,136 @@ async def tool_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def agent_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Shortcut for running the shell agent via /agent <instruction>.
+
+    Behaves like `/tool shell_agent <instruction>`: the natural-language
+    instruction is translated into a safe shell command (when available)
+    and executed via the existing shell_agent tool.
+    """
+
+    await _run_direct_instruction_tool(
+        update,
+        context,
+        tool_identifier="shell_agent",
+        usage_message="Usage: /agent <instruction>",
+        missing_instruction_message="Please provide an instruction for the agent.",
+        admin_only_message="Agent command is available to admins only.",
+        backend_unavailable_message=(
+            "Agent execution is only available when the Ollama backend is active."
+        ),
+        unavailable_message="Shell agent is unavailable.",
+    )
+
+
+async def web_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Shortcut for running web_search via /web <instruction>.
+
+    Behaves like `/tool web_search <instruction>`: the natural-language
+    instruction is translated into a concise search query (when possible)
+    and executed via the existing web_search tool.
+    """
+
+    await _run_direct_instruction_tool(
+        update,
+        context,
+        tool_identifier="web_search",
+        usage_message="Usage: /web <instruction>",
+        missing_instruction_message="Please provide an instruction for web search.",
+        admin_only_message="Web command is available to admins only.",
+        backend_unavailable_message=(
+            "Web search is only available when the Ollama backend is active."
+        ),
+        unavailable_message="Web search tool is unavailable.",
+    )
+
+
+async def _run_direct_instruction_tool(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    tool_identifier: str,
+    usage_message: str,
+    missing_instruction_message: str,
+    admin_only_message: str,
+    backend_unavailable_message: str,
+    unavailable_message: str,
+) -> None:
+    """Resolve and execute a single-instruction tool and respond in mode.
+
+    Shared helper for /agent and /web so that natural-language instructions
+    are translated and routed through run_tool_direct with consistent
+    prompt_history and respond_in_mode handling.
+    """
+
+    if not _ensure_admin(update, update.message, context, custom_message=admin_only_message):
+        return
+
+    if (
+        LLM_PROVIDER != "ollama"
+        or not run_tool_direct
+        or not resolve_tool_identifier
+    ):
+        await update.message.reply_text(backend_unavailable_message)
+        return
+
+    if not context.args:
+        await update.message.reply_text(usage_message)
+        return
+
+    instructions = " ".join(context.args).strip()
+    if not instructions:
+        await update.message.reply_text(missing_instruction_message)
+        return
+
+    try:
+        tool_name, parameters = _resolve_tool_invocation(tool_identifier, instructions)
+    except ToolDirectiveError as directive_err:
+        await update.message.reply_text(str(directive_err))
+        return
+
+    display_prompt = instructions
+    if parameters:
+        first_value = next(iter(parameters.values()))
+        if isinstance(first_value, str) and first_value.strip():
+            display_prompt = first_value.strip()
+
+    message = update.effective_message
+    remember_prompt(context, message, display_prompt)
+
+    result = run_tool_direct(tool_name, parameters)
+    if result is None:
+        await update.message.reply_text(unavailable_message)
+        return
+
+    await respond_in_mode(
+        update.message,
+        context,
+        display_prompt,
+        result,
+        tool_info={"tool_name": tool_name, "parameters": parameters},
+    )
+
+
 async def clear_user_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _ensure_admin(update, update.message, context):
+        return
+
     logger.warn(f"Clearing history for {update.effective_user}")
 
     if LLM_PROVIDER == "ollama" and clear_history:
         clear_history()
     elif LLM_PROVIDER == "gemini":
-        clear_conversations(update.effective_user)
+        if update.effective_user is not None:
+            clear_conversations(update.effective_user.id)
+    else:
+        await update.message.reply_text(
+            "History clearing is only supported for Ollama or Gemini backends."
+        )
 
 
 async def show_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not _is_admin(update):
-        await update.message.reply_text("History is available to the admin only.")
+    if not _ensure_admin(update, update.message, context, custom_message="History is available to the admin only."):
         return
 
     if LLM_PROVIDER != "ollama" or not get_recent_history:
@@ -370,10 +491,12 @@ async def show_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def show_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not _is_admin(update):
-        await update.message.reply_text(
-            "Flow monitoring is available to the admin only."
-        )
+    if not _ensure_admin(
+        update,
+        update.message,
+        context,
+        custom_message="Flow monitoring is available to the admin only.",
+    ):
         return
 
     if LLM_PROVIDER != "ollama" or not get_recent_events:
@@ -434,44 +557,9 @@ def _resolve_tool_invocation(tool_identifier: str, args_text: str):
         normalized = cleaned.lower()
         default_normalized = args_text.lower()
         common_prefixes = (
-            "cat",
-            "cd",
-            "chmod",
-            "chown",
-            "cp",
-            "curl",
-            "df",
-            "docker",
-            "du",
-            "find",
-            "git",
-            "grep",
-            "head",
-            "htop",
-            "journalctl",
-            "kill",
-            "ls",
-            "mkdir",
-            "mv",
-            "node",
-            "npm",
-            "ping",
-            "pip",
-            "ps",
-            "pwd",
-            "python",
-            "rm",
-            "service",
-            "sudo",
-            "systemctl",
-            "tail",
-            "tar",
-            "top",
-            "touch",
-            "unzip",
-            "wget",
-            "whoami",
-            "zip",
+            "cat","cd","chmod","chown","cp","curl","df","docker","du","find","git",
+            "grep","head","htop","journalctl","kill","ls","mkdir","mv","node","npm",
+            "ping","pip","ps","pwd","python","rm","service","sudo","systemctl","tail","tar",             "top",             "touch",             "unzip",             "wget",             "whoami",             "zip",
         )
 
         if not normalized or (
@@ -497,31 +585,6 @@ def _resolve_tool_invocation(tool_identifier: str, args_text: str):
         value = translated_query
 
     return resolved_name, {param_name: value}
-
-
-def _merge_instructions_with_prompt(instructions: str, original_prompt: str) -> str:
-    instructions = (instructions or "").strip()
-    original_prompt = (original_prompt or "").strip()
-
-    if not original_prompt:
-        return instructions
-
-    normalized = instructions.lower().strip()
-    normalized = normalized.rstrip("!.?")
-    if normalized in REPROCESS_CONTROL_WORDS:
-        instructions = ""
-
-    if instructions:
-        return f"{instructions}\n\n{original_prompt}"
-
-    return original_prompt
-
-
-def _is_admin(update: Update) -> bool:
-    try:
-        return str(update.effective_user.id) == str(ADMIN_ID)
-    except Exception:
-        return False
 
 
 def _trim(text: str, limit: int = TRIM_HISTORY_CHARS) -> str:
@@ -555,3 +618,34 @@ def _format_event_entry(event: dict) -> str:
         return f"{timestamp} [{kind}] {message} | {extra_text}"
 
     return f"{timestamp} [{kind}] {message}"
+
+
+def _ensure_admin(
+    update: Update,
+    message: Update | None,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    markdown: bool = False,
+    custom_message: str | None = None,
+) -> bool:
+    """Common admin gate for command handlers.
+
+    Returns True when the caller is the configured admin. When False,
+    it sends an appropriate denial message to the provided message
+    (if any) and leaves context/user_data untouched.
+    """
+
+    if is_admin(update):
+        return True
+
+    if message is None or not hasattr(message, "reply_text"):
+        return False
+
+    text = custom_message or ADMIN_DENY_MESSAGE
+    if markdown and hasattr(message, "reply_markdown"):
+        # Used by /start for a slightly richer welcome/deny path.
+        context.application.create_task(message.reply_markdown(text))
+    else:
+        context.application.create_task(message.reply_text(text))
+
+    return False

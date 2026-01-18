@@ -1,49 +1,40 @@
-import logging
 from typing import Dict, List, Any
 import subprocess
-from utils.command_guard import sanitize_command
 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+from utils.command_guard import sanitize_command, get_last_sanitize_error
+
 
 class ShellAgent:
-    def __init__(self):
-        self._command_trace: List[Dict[str, str]] = []
+    """Thin wrapper around subprocess to execute sanitized shell commands.
+
+    This class is intentionally dumb: it only preprocesses the prompt,
+    passes it through sanitize_command, and executes the result once.
+    All higher-level retry/translation logic lives in services.ollama.
+    """
 
     def shell_agent(self, prompt: str) -> Dict[str, Any]:
-        """
-        Execute a shell command safely and return output.
-        Args:
-            prompt (str): The shell command to execute.
-        Returns:
-            A dictionary containing the execution result.
-        """
+        """Execute a single sanitized shell command and return its result."""
+
         preprocessed = self._preprocess_prompt(prompt)
-        
+
         sanitized_command = sanitize_command(preprocessed)
         if not sanitized_command:
+            detail = get_last_sanitize_error()
+            base = "Command rejected as unsafe or invalid."
+            stderr = f"{base} Reason: {detail}" if detail else base
             return {
                 "command": prompt,
                 "exit_code": -1,
                 "stdout": "",
-                "stderr": "Command rejected as unsafe or invalid.",
+                "stderr": stderr,
                 "command_trace": [{"stage": "prompt", "value": prompt}],
             }
 
-        translated_command = None
-        if self._translate_instruction_to_command:
-            from services.ollama import translate_instruction_to_command  # Import the optional dependency
-            translated_command = translate_instruction_to_command(preprocessed)
-            sanitized_translated_command = sanitize_command(translated_command)
-        
         command_trace = [
             {"stage": "prompt", "value": prompt},
             {"stage": "preprocessed", "value": preprocessed},
+            {"stage": "sanitized", "value": sanitized_command},
         ]
-        if sanitized_command:
-            command_trace.append({"stage": "sanitized", "value": sanitized_command})
-        if translated_command and sanitized_translated_command:
-            command_trace.append({"stage": "translated", "value": sanitized_translated_command})
 
         try:
             result = subprocess.run(
@@ -80,42 +71,11 @@ class ShellAgent:
             }
 
     def _preprocess_prompt(self, prompt: str) -> str:
-        """
-        Preprocess the input prompt.
-        Args:
-            prompt (str): The input prompt.
-        Returns:
-            The preprocessed prompt.
-        """
+        """Trim whitespace from the incoming prompt."""
+
         return prompt.strip() if prompt else ""
 
-    @staticmethod
-    def _sanitize_command(command: str) -> str:
-        """
-        Sanitize a command string.
-        Args:
-            command (str): The command to sanitize.
-        Returns:
-            The sanitized command.
-        """
-        return sanitize_command(command)
 
-    @staticmethod
-    def _translate_instruction_to_command(command: str) -> str:
-        """
-        Translate an instruction to a command (optional).
-        Args:
-            command (str): The instruction to translate.
-        Returns:
-            The translated command.
-        """
-        if not hasattr(ShellAgent, '_translate_instruction_to_command'):
-            return None
-        from services.ollama import translate_instruction_to_command  
-        return translate_instruction_to_command(command).strip()
-
-
-from tools.agent import ShellAgent  
 shell_agent_instance = ShellAgent()
 
 tool = {

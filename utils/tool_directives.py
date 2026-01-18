@@ -77,10 +77,10 @@ def _parse_tool_directive(text: str) -> Optional[Tuple[str, Dict[str, Any]]]:
 
     value: Any = remaining
     if param_name == "prompt" and translate_instruction_to_command:
-        logger.info(f"tool_directives: translating instruction to command: {remaining!r}")
+        logger.debug(f"tool_directives: translating instruction to command: {remaining!r}")
         translated = translate_instruction_to_command(remaining)
 
-        logger.info(f"tool_directives: raw translated command: {translated!r}")
+        logger.debug(f"tool_directives: raw translated command: {translated!r}")
 
         if not translated:
             logger.warning(
@@ -110,7 +110,7 @@ def _parse_tool_directive(text: str) -> Optional[Tuple[str, Dict[str, Any]]]:
 
         normalized = cleaned.lower()
         default_normalized = remaining.lower()
-        logger.info(
+        logger.debug(
             f"tool_directives: normalized command={normalized!r}, original={default_normalized!r}"
         )
         common_prefixes = (

@@ -1,6 +1,11 @@
 import logging
+import os
+from typing import Any
 
-from telegram import Update
+try:  # Optional at import time to keep tests and tools lightweight
+    from telegram import Update  # type: ignore
+except ImportError:  # pragma: no cover - telegram is only required for the bot process
+    Update = Any  # type: ignore
 
 from config import ADMIN_ID
 
@@ -9,13 +14,17 @@ GREEN_COL = "\033[92m"
 RST = "\033[0m"
 
 logger = logging.getLogger("usage")
+
+_level_name = os.getenv("LOG_LEVEL", "INFO").upper()
+_level = getattr(logging, _level_name, logging.INFO)
+
 handler = logging.FileHandler("usage.log")
 formatter = logging.Formatter("%(asctime)s - %(message)s")
 handler.setFormatter(formatter)
-handler.setLevel(logging.DEBUG)
+handler.setLevel(_level)
 logger.addHandler(handler)
 
-logger.setLevel(logging.DEBUG)
+logger.setLevel(_level)
 
 
 def log_user_action(action: str, update: Update, extra: str = ""):

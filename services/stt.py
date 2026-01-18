@@ -1,3 +1,4 @@
+import asyncio
 import base64
 
 import requests
@@ -13,6 +14,7 @@ STT_URL = (
 
 MIME_TYPE_OGG = "audio/ogg"
 STT_PROMPT = "Please transcribe this audio."
+STT_TIMEOUT_SECONDS = 30
 
 
 def encode_audio(file_path: str) -> str:
@@ -20,7 +22,7 @@ def encode_audio(file_path: str) -> str:
         return base64.b64encode(f.read()).decode("utf-8")
 
 
-async def transcribe(file_path: str):
+def _transcribe_sync(file_path: str):
     data = encode_audio(file_path)
     body = {
         "contents": [
@@ -37,5 +39,11 @@ async def transcribe(file_path: str):
         STT_URL,
         headers={"Content-Type": "application/json"},
         json=body,
+        timeout=STT_TIMEOUT_SECONDS,
     )
     return response.json()
+
+
+async def transcribe(file_path: str):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _transcribe_sync, file_path)

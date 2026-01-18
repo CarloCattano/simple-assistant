@@ -90,7 +90,7 @@ def generate_content(prompt: str, history: list = None) -> str:
 
     payload = {
         "contents": contents,
-        "system_instruction": {"parts": {"text": SYSTEM_PROMPT}},
+        "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
     }
     headers = {"Content-Type": "application/json"}
     try:

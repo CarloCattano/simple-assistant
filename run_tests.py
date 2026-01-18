@@ -12,6 +12,29 @@ from typing import Optional
 DEFAULT_PATTERN = "test*.py"
 
 
+def _reexec_in_venv_if_needed() -> None:
+    """Re-exec this script under .venv/bin/python if available.
+
+    This lets you call `python run_tests.py` from the repo root without
+    manually activating the virtualenv first, while avoiding infinite
+    recursion when already running inside the venv.
+    """
+
+    workspace = Path(__file__).resolve().parent
+    venv_python = workspace / ".venv" / "bin" / "python"
+
+    # Only re-exec if the venv interpreter exists and we're not already
+    # using it.
+    if not venv_python.is_file():
+        return
+
+    current = Path(sys.executable).resolve()
+    if current == venv_python.resolve():
+        return
+
+    os.execv(str(venv_python), [str(venv_python), *sys.argv])
+
+
 def _supports_color(stream) -> bool:
     return stream.isatty() and os.environ.get("NO_COLOR") is None
 
@@ -80,6 +103,9 @@ def run_all_tests(pattern: str = DEFAULT_PATTERN, enable_color: Optional[bool] =
 
 
 def main() -> None:
+    # Prefer the project-local virtual environment interpreter when present.
+    _reexec_in_venv_if_needed()
+
     parser = argparse.ArgumentParser(description="Run the project's unit tests.")
     parser.add_argument(
         "-p",

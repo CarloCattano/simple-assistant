@@ -10,6 +10,7 @@ from telegram.ext import ContextTypes
 from services.ocr import process_image, group_tokens_by_line
 from services.stt import transcribe
 from services.tts import synthesize_speech
+from utils.auth import ADMIN_DENY_MESSAGE, is_admin
 from utils.logger import logger
 
 from services.conversation import conversation_manager
@@ -47,6 +48,22 @@ MSG_TRANSCRIBING_VOICE = "Transcribing the voice message..."
 MSG_AUDIO_NOT_UNDERSTOOD = "I couldn't understand the audio."
 
 
+async def _ensure_admin_for_message(update: Update, message) -> bool:
+    """Common admin gate for media handlers.
+
+    Returns True when the caller is the configured admin. When False,
+    it sends ADMIN_DENY_MESSAGE to the provided Telegram message (if any).
+    """
+
+    if is_admin(update):
+        return True
+
+    if message is not None:
+        await message.reply_text(ADMIN_DENY_MESSAGE)
+
+    return False
+
+
 async def handle_tool_audio_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -82,6 +99,8 @@ async def handle_tool_audio_choice(update: Update, context: ContextTypes.DEFAULT
 
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
+    if not await _ensure_admin_for_message(update, message):
+        return
     if not message or not message.photo:
         return
 
@@ -136,7 +155,7 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await message.reply_text(
                 f"{MSG_OCR_REFERENCE_HEADER}{aggregated_text}{MSG_OCR_REFERENCE_FOOTER}"
             )
-            reply = conversation_manager.generate_reply(user_id, receipt_prompt)
+            reply = await conversation_manager.generate_reply_async(user_id, receipt_prompt)
         except RuntimeError as err:
             await status_message.edit_text(str(err))
             return
@@ -182,6 +201,8 @@ def _extract_transcribed_text(payload: Any) -> Optional[str]:
 
 async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
+    if not await _ensure_admin_for_message(update, message):
+        return
     if not message or not message.voice:
         return
 
@@ -206,7 +227,7 @@ async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         transcription = await transcribe(temp_path)
-        logger.info(f"Transcription result: {transcription}")
+        logger.debug(f"Transcription result: {transcription}")
         text = _extract_transcribed_text(transcription)
 
         if not text:
@@ -216,7 +237,7 @@ async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_message.edit_text(f"Transcription: {text}")
 
         user_id = _resolve_user_id(update, message)
-        reply = conversation_manager.generate_reply(user_id, text)
+        reply = await conversation_manager.generate_reply_async(user_id, text)
     except RuntimeError as err:
         await message.reply_text(str(err))
         return

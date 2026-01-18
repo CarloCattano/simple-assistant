@@ -31,9 +31,8 @@ SAMPLE_RATE_HZ = 24000  # 24 kHz
 def clean_text_for_tts(text: str) -> str:
     text = html.unescape(text)
     text = re.sub(r"[^a-zA-Z0-9\s.,?!:]", "", text)
-    # text = re.sub(r"\s+", " ", text)  # Remove multiple spaces
 
-    logger.info(f"\nCleaned text for TTS: {text}\n")
+    logger.debug(f"Cleaned text for TTS: {text}")
     return text.strip()
 
 

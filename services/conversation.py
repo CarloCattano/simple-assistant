@@ -1,4 +1,5 @@
 from typing import Any, Optional
+import asyncio
 
 from config import LLM_PROVIDER
 from services.gemini import handle_user_message
@@ -34,6 +35,17 @@ class ConversationManager:
             return generate_content(prompt)
 
         raise RuntimeError("LLM provider is not configured. Enable Gemini or Ollama.")
+
+    async def generate_reply_async(self, user_id: Optional[int], prompt: str) -> str:
+        """Async wrapper that offloads blocking LLM calls to a thread pool.
+
+        Both Gemini and Ollama clients are synchronous today (HTTP / local RPC),
+        so running them in the default executor avoids blocking the Telegram
+        event loop while preserving the existing generate_reply API.
+        """
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self.generate_reply, user_id, prompt)
 
     def summarize_tool_output(self, mode: str, ai_output: str, tool_info: Any) -> str:
         """Return tool output as-is.

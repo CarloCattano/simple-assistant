@@ -64,7 +64,7 @@ MAX_HISTORY_LENGTH = 40
 
 available_functions = load_tools()
 
-logger.info(
+logger.debug(
     f"Loaded {len(available_functions)} tools for Ollama. {list(available_functions.keys())}"
 )
 
@@ -123,8 +123,7 @@ def generate_content(prompt: str) -> str:
     user_id = _get_or_create_user_id()
     history = user_histories.setdefault(user_id, [])
 
-    if not history or history[0].get("role") != "system":
-        history.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
+    _ensure_system_prompt(history)
 
     # Add user message
     history.append({"role": "user", "content": prompt})
@@ -258,8 +257,6 @@ def call_tool_with_tldr(
 ) -> str:
     working_arguments = dict(arguments)
 
-    from services.ollama import translate_instruction_to_query
-
     if (
         tool_name == "web_search"
         and translate_instruction_to_query
@@ -272,22 +269,17 @@ def call_tool_with_tldr(
                 logger.warn("Query translation failed for web_search; aborting tool call.")
                 return "I couldn't infer a web search query from that request."
             working_arguments["query"] = translated
-    # For the shell_agent, we support a small number of safe retry attempts
-    # where we let the LLM suggest alternative commands after failures.
+    
     raw_output: Any
     if tool_name == "shell_agent":
-        max_attempts = 3
+        max_attempts = 4
         attempt = 0
         last_output: Any = None
-
-        from services.ollama import translate_instruction_to_command
 
         while attempt < max_attempts:
             attempt += 1
             last_output = tool_callable(**working_arguments)
 
-            # shell_agent is expected to return a dict; if it doesn't,
-            # just break and use whatever we got.
             if not isinstance(last_output, dict):
                 break
 
@@ -295,14 +287,18 @@ def call_tool_with_tldr(
             stderr = (last_output.get("stderr") or "").strip()
             stdout = (last_output.get("stdout") or "").strip()
 
-            # Consider it a hard failure if the exit code is non-zero.
             has_error = exit_code not in (0, None)
 
-            # Also treat purely-stderr outputs with common error wording as failures,
-            # even when the exit code is zero (many CLIs log to stderr).
             lower_err = stderr.lower()
             if not has_error and stderr and not stdout:
-                for marker in ("unknown option", "unrecognized option", "invalid option", "command not found"):
+                for marker in (
+                    "unknown option",
+                    "unrecognized option",
+                    "invalid option",
+                    "command not found",
+                    "permission denied",
+                    "no such file or directory",
+                ):
                     if marker in lower_err:
                         has_error = True
                         break
@@ -310,15 +306,10 @@ def call_tool_with_tldr(
             if not has_error:
                 break
 
-            # If we cannot translate instructions to a new command, or if we
-            # don't have a textual prompt to refine, stop retrying.
             original_prompt = working_arguments.get("prompt")
             if not isinstance(original_prompt, str) or not translate_instruction_to_command:
                 break
 
-            # Ask the LLM for an alternative safe command, taking into account
-            # the previous failure. The translator will still run the result
-            # through sanitize_command.
             context_instruction = (
                 f"{original_prompt}\n\n"
                 f"Previous command: {last_output.get('command')!r} "
@@ -349,7 +340,9 @@ def call_tool_with_tldr(
     )
 
     history.append({"role": "tool", "name": tool_name, "content": raw_text})
-    logger.info(f"Tool {tool_name} output:\n{raw_text}")
+
+    trimmed_for_log = _truncate_event_text(raw_text)
+    logger.info(f"Tool {tool_name} output:\n{trimmed_for_log}")
 
     _record_event(
         "tool_call",
@@ -363,7 +356,8 @@ def call_tool_with_tldr(
         "history_after_tool",
         {
             "tool": tool_name,
-            "history": history,
+            "history_size": len(history),
+            "last_entry": history[-1] if history else None,
         },
     )
 
@@ -440,17 +434,24 @@ def _format_tool_output(tool_name: str, raw_output: Any) -> str:
 
         if command:
             lines.append(f"$ {command}")
+        has_error = (exit_code not in (0, None)) or (stderr and not stdout)
 
-        if exit_code is not None:
-            lines.append(f"Exit code: {exit_code}")
+        if has_error:
+            if exit_code is not None:
+                lines.append(f"Exit code: {exit_code}")
 
-        if stdout:
-            lines.append("Stdout:")
-            lines.append(stdout.strip())
+            if stdout:
+                lines.append("Stdout:")
+                lines.append(stdout.strip())
 
-        if stderr:
-            lines.append("Stderr:")
-            lines.append(stderr.strip())
+            if stderr:
+                lines.append("Stderr:")
+                lines.append(stderr.strip())
+        else:
+            if stdout:
+                lines.append(stdout.strip())
+            elif exit_code is not None:
+                lines.append(f"Exit code: {exit_code}")
 
         if lines:
             return "\n".join(lines).strip()
@@ -469,6 +470,17 @@ def _get_or_create_user_id() -> str:
     if not hasattr(_thread_local, "user_id"):
         _thread_local.user_id = str(uuid.uuid4())
     return _thread_local.user_id
+
+
+def _ensure_system_prompt(history: List[Dict[str, str]]) -> None:
+    """Ensure the first history entry is the system prompt.
+
+    Both chat-driven and direct tool flows expect the same leading
+    system message; centralize this check so behavior stays aligned.
+    """
+
+    if not history or history[0].get("role") != "system":
+        history.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
 
 
 def _trim_history(history: List[Dict[str, str]]) -> None:
@@ -499,8 +511,7 @@ def run_tool_direct(
 
     user_id = _get_or_create_user_id()
     history = user_histories.setdefault(user_id, [])
-    if not history or history[0].get("role") != "system":
-        history.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
+    _ensure_system_prompt(history)
     _record_event(
         "tool_request",
         f"Direct tool request: {tool_identifier}",

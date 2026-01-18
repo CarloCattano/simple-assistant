@@ -26,7 +26,7 @@ def web_search(query: str) -> str:
     if not query:
         return "Please provide a non-empty search query."
 
-    logger.info(f"Performing web search for query: {query}")
+    logger.debug(f"Performing web search for query: {query}")
 
     # Primary provider: DuckDuckGo HTML
     try:
@@ -92,6 +92,7 @@ def _remove_kl_dropdown(selector: Selector) -> None:
 
 def _extract_snippets(selector: Selector) -> list[str]:
     snippets: list[str] = []
+    total_len = 0
     for part in selector.xpath("//body//text()").getall():
         stripped = part.strip()
         if not stripped:
@@ -99,6 +100,9 @@ def _extract_snippets(selector: Selector) -> list[str]:
         if len(stripped) > MAX_SNIPPET_LEN:
             stripped = stripped[:MAX_SNIPPET_LEN].rsplit(" ", 1)[0] + "…"
         snippets.append(stripped.replace(".0000000", "\n --- \n"))
+        total_len += len(stripped)
+        if total_len >= MAX_TEXT_CHARS:
+            break
     return snippets
 
 
@@ -112,6 +116,8 @@ def _extract_links(selector: Selector) -> list[str]:
         if cleaned and cleaned not in seen:
             clean_links.append(cleaned)
             seen.add(cleaned)
+            if len(clean_links) >= MAX_LINKS * 2:
+                break
     return clean_links
 
 
@@ -141,12 +147,6 @@ def _truncate_text(text: str, max_chars: int = MAX_TEXT_CHARS) -> str:
 
 
 def _format_search_result(summary: str, links: List[str]) -> str:
-    """Pretty-print search results with spacing and simple Markdown.
-
-    The summary is shown first, followed by a "Links:" section where each
-    result URL is rendered as a bullet point. This keeps the output readable
-    on Telegram while remaining plain-text friendly.
-    """
     parts: List[str] = []
     summary = (summary or "").strip()
     if summary:
@@ -163,7 +163,6 @@ def _format_search_result(summary: str, links: List[str]) -> str:
 
 
 def _search_duckduckgo_lite(query: str) -> Tuple[str, List[str]]:
-    """Fallback search using DuckDuckGo's lite HTML endpoint (no API key)."""
     base_url = "https://lite.duckduckgo.com/lite/?q="
     url = f"{base_url}{quote(query)}"
     try:

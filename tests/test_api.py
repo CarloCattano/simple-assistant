@@ -128,18 +128,6 @@ class TelegramBotTests(unittest.TestCase):
         self.assertEqual(int(result.get("id")), int(self.chat_id))
         self.assertIn("username", result)
 
-    def test_get_chat_returns_metadata(self):
-        response = requests.get(
-            f"{self.base_url}/getChat",
-            params={"chat_id": self.chat_id},
-            timeout=10,
-        )
-        self.assertEqual(response.status_code, 200, response.text)
-        payload = response.json()
-        self.assertTrue(payload.get("ok"), payload)
-        result = payload.get("result", {})
-        self.assertEqual(int(result.get("id")), int(self.chat_id))
-
     def test_latency_below_threshold(self):
         start = time.time()
         response = requests.get(f"{self.base_url}/getMe", timeout=10)

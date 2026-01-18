@@ -3,11 +3,20 @@ import re
 from typing import Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import ContextTypes
 from telegramify_markdown import markdownify
 
 from services.conversation import conversation_manager
 from services.tts import synthesize_speech
+from utils.auth import ADMIN_DENY_MESSAGE, is_admin
 from utils.logger import log_user_action, logger
+from utils.history_state import (
+    get_prompt_history,
+    get_output_metadata,
+    remember_generated_output,
+    remember_prompt,
+    lookup_reply_context,
+)
 
 from utils.tool_directives import (
     REPROCESS_CONTROL_WORDS,
@@ -43,8 +52,27 @@ PROMPT_INVALID_TEXT = "Please send a valid text message."
 PROMPT_UNKNOWN_TOOL = "Unknown tool request."
 
 
+async def _ensure_admin_for_message(update: Update, target_message) -> bool:
+    """Common admin gate for message-based handlers.
+
+    Returns True when the caller is the configured admin. When False,
+    it sends ADMIN_DENY_MESSAGE to the provided Telegram message (if any).
+    """
+
+    if is_admin(update):
+        return True
+
+    if target_message is not None:
+        await target_message.reply_text(ADMIN_DENY_MESSAGE)
+
+    return False
+
+
 async def send_chunked_message(
-    target, text: str, parse_mode: str = DEFAULT_PARSE_MODE, chunk_size: int = DEFAULT_CHUNK_SIZE
+    target,
+    text: str,
+    parse_mode: Optional[str] = DEFAULT_PARSE_MODE,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
 ):
     if target is None:
         logger.warning("send_chunked_message invoked without a target message")
@@ -59,6 +87,48 @@ async def send_chunked_message(
             messages.append(await target.reply_text(text=cleaned_chunk, parse_mode=None))
     else:
         messages.append(await target.reply_text(text=text, parse_mode=parse_mode))
+
+    return messages
+
+
+async def _send_code_block_chunked(
+    target,
+    body: str,
+    language: str = "bash",
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+):
+    """Send a long code block as multiple Telegram messages with balanced fences.
+
+    Each chunk is wrapped in its own ```language fenced block so that
+    Markdown rendering remains correct even when the output must be split
+    to satisfy Telegram's message length limits.
+    """
+
+    if target is None:
+        logger.warning("_send_code_block_chunked invoked without a target message")
+        return []
+
+    messages = []
+    lines = (body or "").splitlines()
+    current = ""
+
+    for line in lines:
+        candidate = line if not current else f"{current}\n{line}"
+        test_block = f"```{language}\n{candidate}\n```"
+
+        if len(test_block) > chunk_size and current:
+            block = f"```{language}\n{current}\n```"
+            messages.append(
+                await target.reply_text(text=block, parse_mode="Markdown")
+            )
+            current = line
+        else:
+            current = candidate
+
+    if current or not lines:
+        block_body = current or ""
+        block = f"```{language}\n{block_body}\n```"
+        messages.append(await target.reply_text(text=block, parse_mode="Markdown"))
 
     return messages
 
@@ -133,7 +203,7 @@ async def maybe_send_tool_audio(update_message, context):
         [
             [
                 InlineKeyboardButton("🔊", callback_data=CALLBACK_TOOL_TLDR_AUDIO_YES),
-                InlineKeyboardButton("Text", callback_data=CALLBACK_TOOL_TLDR_AUDIO_NO),
+                InlineKeyboardButton("Skip", callback_data=CALLBACK_TOOL_TLDR_AUDIO_NO),
             ]
         ]
     )
@@ -153,19 +223,16 @@ async def respond_in_mode(update_message, context, user_input, ai_output, *, too
     ai_output = conversation_manager.summarize_tool_output(mode, ai_output, tool_info)
     sent_messages = []
     is_shell_agent = bool(tool_info and tool_info.get("tool_name") == "shell_agent")
-    is_web_search = bool(tool_info and tool_info.get("tool_name") == "web_search")
 
     if mode == DEFAULT_MODE:
         if is_shell_agent:
-            code_block = f"```bash\n{ai_output}\n```"
-            sent_messages = await send_chunked_message(
+            # For shell_agent, preserve Markdown code fencing even when the
+            # message must be split: send as multiple balanced ```bash blocks.
+            sent_messages = await _send_code_block_chunked(
                 update_message,
-                code_block,
-                parse_mode="Markdown",
+                ai_output,
+                language="bash",
             )
-        elif is_web_search:
-            reply = markdownify(ai_output)
-            sent_messages = await send_chunked_message(update_message, reply)
         else:
             reply = markdownify(ai_output)
             sent_messages = await send_chunked_message(update_message, reply)
@@ -188,31 +255,8 @@ async def respond_in_mode(update_message, context, user_input, ai_output, *, too
         else:
             await update_message.reply_text("Content generation failed.")
 
-    _remember_generated_prompt(context, user_input, sent_messages, tool_info)
+    remember_generated_output(context, user_input, sent_messages, tool_info)
     await maybe_send_tool_audio(update_message, context)
-
-
-def _remember_generated_prompt(context, prompt: str, messages, tool_info):
-    if not messages:
-        return
-
-    prompt_history = context.user_data.setdefault("prompt_history", {})
-    output_metadata = context.user_data.setdefault("output_metadata", {})
-    for message in messages:
-        if not message:
-            continue
-        try:
-            prompt_history[message.message_id] = prompt
-            if tool_info:
-                output_metadata[message.message_id] = {
-                    "prompt": prompt,
-                    "tool_name": tool_info.get("tool_name"),
-                    "parameters": tool_info.get("parameters"),
-                }
-            else:
-                output_metadata.pop(message.message_id, None)
-        except Exception:
-            continue
 
 
 def _strip_markdown_escape(text: str) -> str:
@@ -267,7 +311,7 @@ async def _maybe_handle_tool_followup(
         await message.reply_text("Unknown tool request.", parse_mode=None)
         return True
 
-    prompt_history = context.user_data.setdefault("prompt_history", {})
+    prompt_history = _get_prompt_history(context)
     prompt_history[message.message_id] = display_prompt
     await respond_in_mode(
         message,
@@ -281,22 +325,19 @@ async def _maybe_handle_tool_followup(
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, *args):
     message = update.message
+    if not await _ensure_admin_for_message(update, message):
+        return
     if not message or not message.text:
         return
 
-    prompt_history = context.user_data.setdefault("prompt_history", {})
-    output_metadata = context.user_data.get("output_metadata") or {}
+    prompt_history = get_prompt_history(context)
 
     user_text = _strip_command_prefix(message.text).strip()
 
     reprocess_detail = None
     reply = message.reply_to_message
     if reply:
-        original_prompt = prompt_history.get(reply.message_id)
-        if not original_prompt and reply.text:
-            original_prompt = reply.text.strip()
-
-        tool_metadata = output_metadata.get(reply.message_id) if output_metadata else None
+        original_prompt, tool_metadata = lookup_reply_context(context, reply)
 
         if original_prompt:
             instructions = user_text
@@ -318,7 +359,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, *ar
         await message.reply_text(PROMPT_INVALID_TEXT)
         return
 
-    prompt_history[message.message_id] = user_text
+    remember_prompt(context, message, user_text)
 
     if conversation_manager.is_ollama() and run_tool_direct:
         try:
@@ -357,7 +398,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, *ar
 
     try:
         user_id = _resolve_user_id(update, message)
-        generated_content = conversation_manager.generate_reply(user_id, user_text)
+        generated_content = await conversation_manager.generate_reply_async(user_id, user_text)
     except RuntimeError as err:
         await mess.edit_text(str(err))
         return
@@ -370,13 +411,15 @@ async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TY
     if not edited or not edited.text:
         return
 
-    prompt_history = context.user_data.setdefault("prompt_history", {})
-    prompt_history[edited.message_id] = edited.text.strip()
+    if not await _ensure_admin_for_message(update, edited):
+        return
+
+    remember_prompt(context, edited, edited.text.strip())
 
     log_user_action("edited_text", update, edited.text)
 
     try:
-        generated_content = conversation_manager.generate_reply(edited.from_user.id, edited.text)
+        generated_content = await conversation_manager.generate_reply_async(edited.from_user.id, edited.text)
     except RuntimeError as err:
         await edited.reply_text(str(err))
         return

@@ -246,4 +246,79 @@ def derive_followup_tool_request(
 
         return tool_name, {"query": new_query}, new_query
 
+    if tool_name == "shell_agent":
+        if not translate_instruction_to_command:
+            return None
+
+        base_command = ""
+        if isinstance(parameters.get("prompt"), str):
+            base_command = parameters["prompt"].strip()
+        if not base_command and isinstance(original_prompt, str):
+            base_command = original_prompt.strip()
+
+        instructions = (instructions or "").strip()
+
+        # If no new instructions are provided, simply re-run the previous command.
+        if not instructions and base_command:
+            return tool_name, {"prompt": base_command}, base_command
+
+        parts = []
+        if instructions:
+            parts.append(instructions)
+        if base_command:
+            parts.append(f"Previous command: {base_command}")
+        command_input = "\n\n".join(parts) if parts else instructions
+
+        translated = translate_instruction_to_command(command_input)
+        if not translated:
+            reason = None
+            if get_last_command_translation_error:
+                try:
+                    reason = get_last_command_translation_error()
+                except Exception:
+                    reason = None
+
+            base_msg = (
+                "Couldn't translate your follow-up into a *safe* shell command. "
+                "This usually happens when the instruction is too ambiguous, or would require "
+                "unsupported/unsafe operations such as sudo, subshells, redirections, or unknown binaries. "
+                "Please send the exact shell command you want to run instead."
+            )
+            if reason:
+                base_msg = f"{base_msg} (Reason: {reason})"
+
+            raise ToolDirectiveError(base_msg)
+
+        cleaned = translated.strip()
+        if not cleaned:
+            raise ToolDirectiveError("Follow-up command translation returned an empty result.")
+
+        return tool_name, {"prompt": cleaned}, cleaned
+
+    if tool_name == "search_and_scrape":
+        base_url = ""
+        if isinstance(parameters.get("url"), str):
+            base_url = parameters["url"].strip()
+        if not base_url and isinstance(original_prompt, str):
+            base_url = original_prompt.strip()
+
+        instructions = (instructions or "").strip()
+
+        # If no new instructions, reuse the previous URL if available.
+        if not instructions and base_url:
+            return tool_name, {"url": base_url}, base_url
+
+        candidate = instructions or base_url
+        if not candidate:
+            raise ToolDirectiveError("No URL to reuse or update for this tool reply.")
+
+        # Very small heuristic: if it contains spaces and doesn't look like a URL,
+        # we consider it too ambiguous.
+        if " " in candidate and not candidate.startswith(("http://", "https://")):
+            raise ToolDirectiveError(
+                "Couldn't infer a URL from that follow-up request. Please reply with a full URL."
+            )
+
+        return tool_name, {"url": candidate}, candidate
+
     return None

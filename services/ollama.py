@@ -253,8 +253,9 @@ def call_tool_with_tldr(
     tool_name: str,
     tool_callable,
     history: List[Dict[str, str]],
+    tldr_separate: bool = False,
     **arguments,
-) -> str:
+) -> str | tuple[str, str | None]:
     working_arguments = dict(arguments)
 
     if (
@@ -363,7 +364,7 @@ def call_tool_with_tldr(
 
     if tool_name == "shell_agent":
         logger.info("Skipping TLDR for shell_agent; returning raw tool output only.")
-        return raw_text
+        return raw_text if not tldr_separate else (raw_text, None)
 
     summary = None
     try:
@@ -411,9 +412,12 @@ def call_tool_with_tldr(
         except Exception as audio_err:
             logger.error(f"Error building audio script for tool {tool_name}: {audio_err}")
 
-        return f"{raw_text}\n\nTLDR: {summary_text}"
+        if tldr_separate:
+            return raw_text, summary_text
+        else:
+            return f"{raw_text}\n\nTLDR: {summary_text}"
 
-    return raw_text
+    return raw_text if not tldr_separate else (raw_text, None)
 
 
 def _format_tool_output(tool_name: str, raw_output: Any) -> str:

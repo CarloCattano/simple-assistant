@@ -327,6 +327,11 @@ async def tool_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     remember_prompt(context, message, display_prompt)
 
+    # Ensure tool_name and parameters are set before proceeding
+    if not tool_name or parameters is None:
+        await update.message.reply_text("Tool name or parameters are not set. Cannot execute tool request.")
+        return
+
     result = run_tool_direct(tool_name, parameters)
     if result is None:
         await update.message.reply_text("Unknown or unavailable tool.")
@@ -423,17 +428,113 @@ async def _run_direct_instruction_tool(
         await update.message.reply_text(missing_instruction_message)
         return
 
-    try:
-        tool_name, parameters = _resolve_tool_invocation(tool_identifier, instructions)
-    except ToolDirectiveError as directive_err:
-        await update.message.reply_text(str(directive_err))
-        return
-
+    message = update.effective_message
+    derived_followup = None
     display_prompt = instructions
-    if parameters:
-        first_value = next(iter(parameters.values()))
-        if isinstance(first_value, str) and first_value.strip():
-            display_prompt = first_value.strip()
+    tool_display_info = ""
+
+    # When replying to a previous tool output, attempt to derive a follow-up
+    # invocation using the stored prompt and tool metadata.
+    if message and message.reply_to_message:
+        reply_message = message.reply_to_message
+        original_prompt, tool_metadata = lookup_reply_context(context, reply_message)
+
+        if tool_metadata and resolve_tool_identifier:
+            try:
+                derived_followup = _derive_followup_tool_request(
+                    instructions,
+                    original_prompt or "",
+                    tool_metadata,
+                )
+            except ToolDirectiveError as directive_err:
+                await update.message.reply_text(str(directive_err))
+                return
+
+            if derived_followup:
+                resolved = resolve_tool_identifier(tool_identifier)
+                if not resolved:
+                    await update.message.reply_text(unavailable_message)
+                    return
+
+                resolved_name, _ = resolved
+                derived_tool_name, parameters, derived_display = derived_followup
+
+                if derived_tool_name != resolved_name:
+                    await update.message.reply_text(
+                        "Follow-up command must use the same tool as the original output."
+                    )
+                    return
+
+                tool_name = derived_tool_name
+                display_prompt = derived_display
+            else:
+                tool_name = None
+        else:
+            tool_name = None
+    else:
+        tool_name = None
+
+
+
+    # If this is a reply to a previous shell_agent message and no follow-up could be derived,
+    # try to synthesize a new command using the LLM translator with previous context.
+    if message and message.reply_to_message and not derived_followup:
+        reply_message = message.reply_to_message
+        original_prompt, tool_metadata = lookup_reply_context(context, reply_message)
+        if tool_metadata and tool_metadata.get("tool_name") == "shell_agent" and translate_instruction_to_command:
+            prev_command = ""
+            if isinstance(tool_metadata.get("parameters", {}).get("prompt"), str):
+                prev_command = tool_metadata["parameters"]["prompt"].strip()
+            if not prev_command and isinstance(original_prompt, str):
+                prev_command = original_prompt.strip()
+            instructions_stripped = instructions.strip()
+            llm_input = instructions_stripped
+            if prev_command:
+                llm_input = f"{instructions_stripped}\n\nPrevious command: {prev_command}"
+            logger.info(f"[AGENT REPLY] LLM fallback input: {llm_input!r}")
+            translated = translate_instruction_to_command(llm_input)
+            logger.info(f"[AGENT REPLY] LLM fallback output: {translated!r}")
+            if translated:
+                tool_name = "shell_agent"
+                parameters = {"prompt": translated.strip()}
+                display_prompt = translated.strip()
+            else:
+                await update.message.reply_text(
+                    "Sorry, I couldn't translate your follow-up into a valid shell command. Please rephrase."
+                )
+                return
+        else:
+            logger.info(f"[AGENT REPLY] No valid previous shell_agent context or LLM unavailable. instructions={instructions!r} tool_metadata={tool_metadata!r}")
+            await update.message.reply_text(
+                "Sorry, I couldn't understand your follow-up. Please rephrase or be more specific."
+            )
+            return
+
+    if not derived_followup:
+        try:
+            tool_name, parameters = _resolve_tool_invocation(tool_identifier, instructions)
+        except ToolDirectiveError as directive_err:
+            await update.message.reply_text(str(directive_err))
+            return
+
+        display_prompt = instructions
+        if parameters:
+            first_value = next(iter(parameters.values()))
+            if isinstance(first_value, str) and first_value.strip():
+                display_prompt = first_value.strip()
+
+        # Compose tool display info for user
+        if tool_name == "web_search":
+            tool_display_info = f"[TOOL REQUEST]\nTool: web_search\nQuery: {parameters.get('query','')}"
+        elif tool_name == "shell_agent":
+            tool_display_info = f"[TOOL REQUEST]\nTool: shell_agent\nPrompt: {parameters.get('prompt','')}"
+        elif tool_name == "search_scrape":
+            tool_display_info = f"[TOOL REQUEST]\nTool: search_scrape\nQuery: {parameters.get('query','')}"
+        else:
+            tool_display_info = f"[TOOL REQUEST]\nTool: {tool_name}\nParameters: {parameters}"
+
+        if tool_display_info:
+            await update.message.reply_text(tool_display_info)
 
     message = update.effective_message
     remember_prompt(context, message, display_prompt)

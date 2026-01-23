@@ -95,7 +95,7 @@ def lookup_reply_context(
         return None, None
 
     prompt_history = get_prompt_history(context)
-    output_metadata = context.user_data.get("output_metadata") or {}
+    output_metadata = get_output_metadata(context)
 
     original_prompt: Optional[str] = prompt_history.get(reply_message.message_id)
     if not original_prompt and getattr(reply_message, "text", None):

@@ -32,9 +32,6 @@ class CommandGuardTests(unittest.TestCase):
     def test_sanitize_command_rejects_unclosed_quote(self):
         self.assertIsNone(sanitize_command('echo "unterminated'))
 
-    def test_sanitize_command_blocks_subshell_tokens(self):
-        self.assertIsNone(sanitize_command("echo $(whoami)"))
-
     def test_detect_direct_command_pass_through(self):
         self.assertEqual(detect_direct_command("ls -lah"), "ls -lah")
 

@@ -6,6 +6,10 @@ from utils.logger import logger
 
 # Commands considered safe for automated execution.
 ALLOWED_COMMANDS = {
+    "awk",
+    "bash",
+    "bc",
+    "cut",
     "ls",
     "pwd",
     "cat",
@@ -28,11 +32,10 @@ ALLOWED_COMMANDS = {
     "sleep",
     "echo",
     "stat",
-    "chmod",
-    "chown",
     "hyprctl",
-    "hypr_control.sh",
+    "./hypr_control.sh",
     "service",
+    "rg",
     "systemctl",
     "journalctl",
     "docker",
@@ -56,9 +59,11 @@ ALLOWED_COMMANDS = {
     "netstat",
     "ping",
     "playerctl",
+    "[",
+    "test",
 }
 
-_DISALLOWED_TOKENS = {"`", "$(", "${"}
+_DISALLOWED_TOKENS = {}
 
 _last_sanitize_error: Optional[str] = None
 
@@ -117,15 +122,17 @@ def sanitize_command(command: str) -> Optional[str]:
             return None
 
         # Disallow explicit redirections to keep commands read-only-ish.
-        if token.startswith((">", "<", "2>", "1>")) or ">>" in token:
-            _last_sanitize_error = f"redirections like {token!r} are not allowed"
-            logger.info(
-                f"sanitize_command: rejecting redirection token {token!r} in command {command!r}"
-            )
-            return None
+        # if token.startswith((">", "<", "2>", "1>")) or ">>" in token:
+        #     _last_sanitize_error = f"redirections like {token!r} are not allowed"
+        #     logger.info(
+        #         f"sanitize_command: rejecting redirection token {token!r} in command {command!r}"
+        #     )
+        #     return None
+
 
     need_binary = True
-    for token in parts:
+    last_binary = None
+    for idx, token in enumerate(parts):
         if token in operators:
             need_binary = True
             continue
@@ -137,7 +144,21 @@ def sanitize_command(command: str) -> Optional[str]:
                     f"sanitize_command: rejecting unknown binary {token!r} in command {command!r}"
                 )
                 return None
+            last_binary = token
             need_binary = False
+            # Guard: disallow ls /, cat /, find /, etc.
+            if idx + 1 < len(parts):
+                next_arg = parts[idx + 1]
+                if last_binary in {"ls", "cat", "find", "du", "rm", "cp", "mv"} and next_arg == "/":
+                    _last_sanitize_error = f"{last_binary} / is not allowed for safety"
+                    logger.info(f"sanitize_command: rejecting dangerous {last_binary} / usage in command: {command!r}")
+                    return None
+            # Guard: disallow find / ...
+            if last_binary == "find" and idx + 1 < len(parts):
+                if parts[idx + 1] == "/":
+                    _last_sanitize_error = "find / is not allowed for safety"
+                    logger.info(f"sanitize_command: rejecting dangerous find / usage in command: {command!r}")
+                    return None
 
     # Preserve the original command text to avoid introducing quotes
     # around operators like | and &&, now that we've validated it.

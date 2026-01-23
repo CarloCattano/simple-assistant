@@ -220,24 +220,55 @@ async def respond_in_mode(update_message, context, user_input, ai_output, *, too
         return
 
     mode = context.user_data.get("mode", DEFAULT_MODE)
-    ai_output = conversation_manager.summarize_tool_output(mode, ai_output, tool_info)
+
+    # Check for TLDR separate flag in tool_info
+    tldr_separate = bool(tool_info and tool_info.get("tldr_separate"))
     sent_messages = []
     is_shell_agent = bool(tool_info and tool_info.get("tool_name") == "shell_agent")
 
+    # If ai_output is a tuple (raw, tldr), unpack and ensure ai_output is a string
+    tldr_text = None
+    if isinstance(ai_output, tuple) and len(ai_output) == 2:
+        ai_output, tldr_text = ai_output
+        if not isinstance(ai_output, str):
+            ai_output = str(ai_output)
+
+    # Cap shell_agent output to 4 Telegram messages (4 * 4096 chars)
+    MAX_TELEGRAM_MSG_SIZE = 4096
+    MAX_AGENT_OUTPUT_CHARS = 4 * MAX_TELEGRAM_MSG_SIZE
+    truncated = False
+    if is_shell_agent and len(ai_output) > MAX_AGENT_OUTPUT_CHARS:
+        ai_output = ai_output[:MAX_AGENT_OUTPUT_CHARS]
+        truncated = True
+
+
     if mode == DEFAULT_MODE:
         if is_shell_agent:
-            # For shell_agent, preserve Markdown code fencing even when the
-            # message must be split: send as multiple balanced ```bash blocks.
+            # Ensure ai_output is a string for code block chunked
+            if not isinstance(ai_output, str):
+                ai_output = str(ai_output)
             sent_messages = await _send_code_block_chunked(
                 update_message,
                 ai_output,
                 language="bash",
             )
+            if truncated:
+                await update_message.reply_text(
+                    "[Output truncated: command output exceeded 4 Telegram message limits. Ask for a more specific command or use filters to reduce output.]"
+                )
         else:
             reply = markdownify(ai_output)
             sent_messages = await send_chunked_message(update_message, reply)
+            # If TLDR is requested as a separate message and present, send it
+            if tldr_text:
+                tldr_msg = f"*TL;DR:*\n{tldr_text}"
+                tldr_sent = await send_chunked_message(update_message, tldr_msg, parse_mode="Markdown")
+                sent_messages.extend(tldr_sent)
 
     elif mode == MODE_AUDIO:
+        # Ensure ai_output is a string for synthesize_speech
+        if not isinstance(ai_output, str):
+            ai_output = str(ai_output)
         if len(ai_output) > MAX_AUDIO_TEXT_LENGTH:
             ai_output = ai_output[:MAX_AUDIO_TEXT_LENGTH]
             await update_message.reply_text(
@@ -257,7 +288,6 @@ async def respond_in_mode(update_message, context, user_input, ai_output, *, too
 
     remember_generated_output(context, user_input, sent_messages, tool_info)
     await maybe_send_tool_audio(update_message, context)
-
 
 def _strip_markdown_escape(text: str) -> str:
     # Remove escape characters used for Telegram MarkdownV2 when sending plain text.
@@ -311,7 +341,7 @@ async def _maybe_handle_tool_followup(
         await message.reply_text("Unknown tool request.", parse_mode=None)
         return True
 
-    prompt_history = _get_prompt_history(context)
+    prompt_history = get_prompt_history(context)
     prompt_history[message.message_id] = display_prompt
     await respond_in_mode(
         message,

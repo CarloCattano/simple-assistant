@@ -39,7 +39,6 @@ def format_tldr_text(
     if not tldr:
         return ""
     if markdown:
-        tldr = escape_markdown_v2(tldr)
         if tool_name:
             return f"*{escape_markdown_v2(tool_name)} TLDR:*\n{tldr}"
         return f"*TLDR:*\n{tldr}"
@@ -57,7 +56,7 @@ async def send_tldr(
     tldr: str,
     tool_name: Optional[str] = None,
     markdown: bool = True,
-    escape: bool = True,
+    escape: bool = False,
     send_func: Optional[Callable] = None,
 ):
     """

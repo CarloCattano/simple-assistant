@@ -47,7 +47,7 @@ except ImportError:  # Guard against optional Ollama dependency
     run_tool_direct = None
 
 
-DEFAULT_PARSE_MODE = "MarkdownV2"
+DEFAULT_PARSE_MODE = "Markdown"
 DEFAULT_CHUNK_SIZE = 4096
 MAX_VOICE_CAPTION_LENGTH = 1024
 MAX_AUDIO_TEXT_LENGTH = 4096
@@ -275,7 +275,7 @@ async def respond_in_mode(update_message, context, user_input, ai_output, *, too
             for heading, code in sections:
                 if heading and code.strip():
                     escaped_heading = escape_markdown_v2(heading)
-                    formatted_sections.append(f"*{escaped_heading}*\n\n```bash\n{code}\n```")
+                    formatted_sections.append(f"*{escaped_heading}*\n```bash\n{code}\n```")
                 elif heading:
                     escaped_heading = escape_markdown_v2(heading)
                     formatted_sections.append(f"*{escaped_heading}*")
@@ -299,6 +299,13 @@ async def respond_in_mode(update_message, context, user_input, ai_output, *, too
             for msg in messages_to_send:
                 sent_msg = await update_message.reply_text(msg, parse_mode="Markdown")
                 sent_messages.append(sent_msg)
+
+        else:
+            sent_messages = await send_chunked_message(
+                update_message,
+                ai_output,
+                parse_mode=DEFAULT_PARSE_MODE,
+            )
 
     elif mode == MODE_AUDIO:
         if is_cheat_tool:

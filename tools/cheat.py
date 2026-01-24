@@ -5,14 +5,9 @@ import re
 
 def clean_cheat_output(text: str) -> str:
     """Remove ANSI escape codes and normalize whitespace in cheat.sh output."""
-    if not isinstance(text, str):
-        return text
-    # Remove ANSI color codes
     ansi_re = re.compile(r"\x1b\[[0-9;]*m")
     cleaned = ansi_re.sub("", text)
-    # Collapse multiple spaces, strip trailing spaces from each line
     lines = [re.sub(r"\s+", " ", line).strip() for line in cleaned.splitlines()]
-    # Remove empty lines at start/end, preserve paragraph breaks
     return "\n".join([line for line in lines if line])
 
 

@@ -64,6 +64,16 @@ PROMPT_INVALID_TEXT = "Please send a valid text message."
 PROMPT_UNKNOWN_TOOL = "Unknown tool request."
 
 
+def escape_markdown_v2(text: str) -> str:
+    """Escape Telegram MarkdownV2 special characters, including period and backslash."""
+    # Escape backslash first
+    text = text.replace('\\', r'\\')
+    # List from Telegram MarkdownV2 docs (order matters: backslash first)
+    to_escape = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    for char in to_escape:
+        text = text.replace(char, f"\\{char}")
+    return text
+
 async def _ensure_admin_for_message(update: Update, target_message) -> bool:
     """Common admin gate for message-based handlers.
 
@@ -232,43 +242,89 @@ async def respond_in_mode(update_message, context, user_input, ai_output, *, too
         return
 
     mode = context.user_data.get("mode", DEFAULT_MODE)
-    ai_output = conversation_manager.summarize_tool_output(mode, ai_output, tool_info)
+    # Skip TLDR summary and audio for cheat tool actions
+    is_cheat_tool = bool(tool_info and tool_info.get("tool_name") == "cheat")
+    ai_output = ai_output if is_cheat_tool else conversation_manager.summarize_tool_output(mode, ai_output, tool_info)
     sent_messages = []
     is_shell_agent = bool(tool_info and tool_info.get("tool_name") == "shell_agent")
 
     if mode == DEFAULT_MODE:
         if is_shell_agent:
-            # For shell_agent, preserve Markdown code fencing even when the
-            # message must be split: send as multiple balanced ```bash blocks.
             sent_messages = await _send_code_block_chunked(
                 update_message,
                 ai_output,
                 language="bash",
             )
-        else:
-            reply = markdownify(ai_output)
-            sent_messages = await send_chunked_message(update_message, reply)
+        elif is_cheat_tool:
+            # Parse cheat.sh output and pack multiple sections into messages up to max size
+            sections = []
+            current_heading = None
+            current_code = []
+            for line in ai_output.splitlines():
+                if line.strip().startswith('#'):
+                    if current_code:
+                        sections.append((current_heading, '\n'.join(current_code)))
+                        current_code = []
+                    current_heading = line.strip().lstrip('#').strip()
+                else:
+                    current_code.append(line)
+            if current_code:
+                sections.append((current_heading, '\n'.join(current_code)))
+            
+            formatted_sections = []
+            for heading, code in sections:
+                if heading and code.strip():
+                    escaped_heading = escape_markdown_v2(heading)
+                    formatted_sections.append(f"*{escaped_heading}*\n\n```bash\n{code}\n```")
+                elif heading:
+                    escaped_heading = escape_markdown_v2(heading)
+                    formatted_sections.append(f"*{escaped_heading}*")
+                elif code.strip():
+                    formatted_sections.append(f"```bash\n{code}\n```")
+            
+            messages_to_send = []
+            current_message = ""
+            for section in formatted_sections:
+                test_message = current_message + "\n\n" + section if current_message else section
+                if len(test_message) <= DEFAULT_CHUNK_SIZE:
+                    current_message = test_message
+                else:
+                    if current_message:
+                        messages_to_send.append(current_message)
+                    current_message = section
+            if current_message:
+                messages_to_send.append(current_message)
+            
+            sent_messages = []
+            for msg in messages_to_send:
+                sent_msg = await update_message.reply_text(msg, parse_mode="Markdown")
+                sent_messages.append(sent_msg)
 
     elif mode == MODE_AUDIO:
-        if len(ai_output) > MAX_AUDIO_TEXT_LENGTH:
-            ai_output = ai_output[:MAX_AUDIO_TEXT_LENGTH]
-            await update_message.reply_text(
-                "The generated content was too long and has been clipped to fit the limit."
-            )
-
-        filename = await synthesize_speech(ai_output)
-
-        if filename:
-            if len(user_input) > MAX_USER_INPUT_PREVIEW:
-                user_input = user_input[:MAX_USER_INPUT_PREVIEW] + "..."
-            voice_message = await send_voice_reply(update_message, filename, caption=user_input)
-            if voice_message:
-                sent_messages = [voice_message]
+        if is_cheat_tool:
+            # Do not generate audio for cheat tool
+            await update_message.reply_text("Audio summary is not available for cheat.sh lookups.")
         else:
-            await update_message.reply_text("Content generation failed.")
+            if len(ai_output) > MAX_AUDIO_TEXT_LENGTH:
+                ai_output = ai_output[:MAX_AUDIO_TEXT_LENGTH]
+                await update_message.reply_text(
+                    "The generated content was too long and has been clipped to fit the limit."
+                )
+
+            filename = await synthesize_speech(ai_output)
+
+            if filename:
+                if len(user_input) > MAX_USER_INPUT_PREVIEW:
+                    user_input = user_input[:MAX_USER_INPUT_PREVIEW] + "..."
+                voice_message = await send_voice_reply(update_message, filename, caption=user_input)
+                if voice_message:
+                    sent_messages = [voice_message]
+            else:
+                await update_message.reply_text("Content generation failed.")
 
     remember_generated_output(context, user_input, sent_messages, tool_info)
-    await maybe_send_tool_audio(update_message, context)
+    if not is_cheat_tool:
+        await maybe_send_tool_audio(update_message, context)
 
 
 def _strip_markdown_escape(text: str) -> str:

@@ -11,6 +11,7 @@ from telegram.ext import (
 from config import TELEGRAM_TOKEN
 from handlers.commands import (
     agent_command,
+    cheat_command,
     clear_user_history,
     handle_prompt_decision,
     handle_tts_request,
@@ -40,6 +41,7 @@ CMD_WEB =   "web"
 CMD_CLEAR = "clear"
 CMD_AUDIO = "audio"
 CMD_TEXT =  "text"
+CMD_CHEAT = "cheat"
 
 # start - Start interaction with the bot
 # help - Show this help message
@@ -73,6 +75,7 @@ def main():
         (CMD_TOOL, tool_command),
         (CMD_AGENT, agent_command),
         (CMD_WEB, web_command),
+        (CMD_CHEAT, cheat_command),
         (CMD_CLEAR, clear_user_history),
         (CMD_AUDIO, set_audio_mode),
         (CMD_TEXT, set_text_mode),

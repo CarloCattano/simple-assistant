@@ -12,6 +12,14 @@ from ollama import chat as _ollama_chat
 from tools import load_tools
 from config import DEBUG_OLLAMA, DEBUG_TOOL_DIRECTIVES,  SYSTEM_PROMPT
 from utils.logger import logger, GREEN, RST
+from services.ollama_shared import (
+    CONTENT_REPORTER_SCRIPT_PROMPT,
+    COMMAND_TRANSLATOR_SYSTEM_PROMPT,
+    QUERY_TRANSLATOR_SYSTEM_PROMPT,
+    MODEL_NAME,
+    MAX_HISTORY_LENGTH,
+    MAX_TOOL_OUTPUT_IN_HISTORY,
+)
 from utils.command_guard import (
     detect_direct_command,
     sanitize_command,
@@ -23,33 +31,6 @@ if hasattr(_ollama_chat, "chat"):
 else:
     chat = _ollama_chat
 
-CONTENT_REPORTER_SCRIPT_PROMPT = (
-    "Rewrite that summary into two energetic, fast-paced sentences that stay factually accurate,"
-    " but sound like a sarcastic UK newscaster with playful current-event jokes."
-    " Respond ONLY with the rewritten script—no prefixes, explanations, or quotes."
-    "add [histerically] or [excitedly], !! exclamations or <em> tags where appropriate to enhance the tone. "
-)
-
-COMMAND_TRANSLATOR_SYSTEM_PROMPT = (
-    "You convert natural language requests into a single Linux shell commands. "
-    "Use relative path for commands as a user would do. Add subtasks if needed with ; or &&. " 
-    "Avoid cd and commands that will cause an interactive shell to stall, you are not in an interactive shell. "
-    "Pipes and multiple commands on the same line are allowed though. "
-    "prefer rg over grep for searching text in files recursively ie rg 'search_term' ./folder "
-    "Respond ONLY with the exact command, making sure any quotes are properly closed "
-    "(for example: echo \"Hello World\"). Always close every opening quote character; "
-    "never leave a string unterminated. "
-    "Do not add commentary, shell prompts, explanations, or additional lines. "
-    "Infer requests from trying allowed commands , i.e For requests about controlling music playback, prefer 'playerctl' subcommands like 'playerctl play', 'playerctl pause', 'playerctl next', or 'playerctl previous'. "
-)
-
-QUERY_TRANSLATOR_SYSTEM_PROMPT = (
-    "You receive a user follow-up or instruction plus optional context."
-    " Rewrite it into a single concise web search query that will retrieve the requested information."
-    " If the user refers to doing the same thing as before, infer the subject from the context provided."
-    " Respond with only the search query text—no explanations, quotes, prefixes, or extra lines."
-    " If you cannot produce a reasonable query, respond with the single word NONE."
-)
 
 # Internal global mapping of thread/session -> UUID
 _thread_local = threading.local()
@@ -57,10 +38,7 @@ _thread_local = threading.local()
 # Maps uuid -> conversation history
 user_histories: Dict[str, List[Dict[str, str]]] = {}
 
-MODEL_NAME = "llama3.2"
-
-MAX_HISTORY_LENGTH = 400
-MAX_TOOL_OUTPUT_IN_HISTORY = 1000  # Truncate tool outputs in history to this length
+# Shared constants imported from services.ollama_shared
 
 available_functions = load_tools()
 
@@ -272,7 +250,7 @@ def call_tool_with_tldr(
     
     raw_output: Any
     if tool_name == "shell_agent":
-        max_attempts = 4
+        max_attempts = 3
         attempt = 0
         last_output: Any = None
 
@@ -366,9 +344,9 @@ def call_tool_with_tldr(
         },
     )
 
-    if tool_name == "shell_agent":
+    if tool_name in ("shell_agent", "cheat", "fetch_cheat", "cheat.sh"):
         if DEBUG_OLLAMA or DEBUG_TOOL_DIRECTIVES:
-            logger.info("Skipping TLDR for shell_agent; returning raw tool output only.")
+            logger.info(f"Skipping TLDR for {tool_name}; returning raw tool output only.")
         return raw_text if not tldr_separate else (raw_text, None)
 
     summary = None
@@ -534,14 +512,14 @@ def run_tool_direct(
         f"Direct tool request: {tool_identifier}",
         {"parameters": _stringify_data(parameters)},
     )
-    _debug(
-        "direct_tool_request",
-        {
-            "tool": tool_identifier,
-            "parameters": parameters,
-            "history_size": len(history),
-        },
-    )
+    # _debug(
+    #     "direct_tool_request",
+    #     {
+    #         "tool": tool_identifier,
+    #         "parameters": parameters,
+    #         "history_size": len(history),
+    #     },
+    # )
     history.append(
         {
             "role": "user",

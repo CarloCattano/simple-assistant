@@ -18,6 +18,7 @@ from handlers.messages import (
     DEFAULT_MODE,
     MODE_AUDIO,
     _merge_instructions_with_prompt,
+    escape_markdown_v2,
 )
 from services.gemini import clear_conversations, handle_user_message
 from utils.tool_directives import (
@@ -64,7 +65,8 @@ HELP_TEXT = (
     "/tool   - Use tools directly: /tool <name> [args]\n"
     "/clear  - Clear conversation history\n"
     "/history- Show recent conversation history\n"
-    "/flow   - Show recent tool flow events"
+    "/flow   - Show recent tool flow events\n"
+    "/cheat  - Lookup command usage on cheat.sh: /cheat <command>"
 )
 
 PROMPT_CHOOSE_MODE = (
@@ -388,6 +390,42 @@ async def web_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ),
         unavailable_message="Web search tool is unavailable.",
     )
+
+
+async def cheat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lookup command usage on cheat.sh and return the raw text.
+
+    Usage: /cheat <command>
+    """
+    if not _ensure_admin(update, update.message, context, custom_message="Cheat lookup is available to admins only."):
+        return
+
+    if LLM_PROVIDER != "ollama" or not run_tool_direct:
+        # cheat tool is local; allow regardless of backend but ensure tool exists
+        pass
+
+    if not context.args:
+        await update.message.reply_text("Usage: /cheat <command>")
+        return
+
+    cmd = " ".join(context.args).strip()
+    if not cmd:
+        await update.message.reply_text("Please provide a command to look up.")
+        return
+
+    # Use the tool registry entry (if available) or call run_tool_direct
+    try:
+        if run_tool_direct:
+            result = run_tool_direct("cheat", {"command": cmd})
+        else:
+            # Fallback: attempt to import tools.cheat directly
+            from tools.cheat import fetch_cheat
+
+            result = fetch_cheat(cmd)
+    except Exception as e:
+        await update.message.reply_text(f"Error fetching cheat.sh: {e}")
+        return
+    await respond_in_mode(update.message, context, cmd, result, tool_info={"tool_name": "cheat"})
 
 
 async def _run_direct_instruction_tool(

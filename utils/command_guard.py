@@ -23,6 +23,23 @@ def sanitize_command(command: str) -> Optional[str]:
         logger.debug(f"{YELLOW}empty command{RST}")
         return None
 
+    # Strip surrounding code fences or single-line backtick/quote wrappers
+    # so that model outputs like `rg json | ...` are normalized to the inner command.
+    if command.startswith("```") and command.endswith("```"):
+        # Remove triple backtick fences and optionally a leading language tag
+        inner = command[3:-3].strip()
+        # If the first token looks like a language, drop it (e.g., ```bash\ncmd```) 
+        parts = inner.split("\n", 1)
+        if len(parts) == 2 and re.match(r"^[a-zA-Z0-9_+-]+$", parts[0].strip()):
+            command = parts[1].strip()
+        else:
+            command = inner
+    elif (command.startswith("`") and command.endswith("`")) or (
+        (command.startswith('"') and command.endswith('"'))
+        or (command.startswith("'") and command.endswith("'"))
+    ):
+        command = command[1:-1].strip()
+
     lowered = command.lower()
     if lowered.startswith("sudo"):
         _last_sanitize_error = "commands starting with sudo are not allowed"

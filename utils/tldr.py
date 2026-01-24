@@ -47,7 +47,7 @@ def format_tldr_text(
     else:
         if tool_name:
             return f"{tool_name} TLDR:\n{tldr}"
-        return f"TLDR:\n{tldr}""
+        return f"TLDR:\n{tldr}
 
 
 # --- TLDR Sending ---

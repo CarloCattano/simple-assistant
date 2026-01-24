@@ -516,7 +516,9 @@ async def web_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     parameters = {"query": instructions}
-    result = await run_tool_direct_async("web_search", parameters)
+    result = await run_tool_direct_async(
+        "web_search", parameters, tldr_separate=True
+    )
     tldr = extract_tldr_from_tool_result(result)
     main_result = result[0] if isinstance(result, tuple) else result
 

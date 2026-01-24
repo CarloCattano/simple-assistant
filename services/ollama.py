@@ -768,7 +768,9 @@ import asyncio
 
 
 def run_tool_direct(
-    tool_identifier: str, parameters: Optional[Dict[str, Any]] = None
+    tool_identifier: str,
+    parameters: Optional[Dict[str, Any]] = None,
+    tldr_separate: bool = False,
 ) -> str | tuple[str, str | None] | None:
     parameters = parameters or {}
 
@@ -799,6 +801,7 @@ def run_tool_direct(
             tool_identifier,
             entry["function"],
             history,
+            tldr_separate=tldr_separate,
             **parameters,
         )
     except TypeError as err:
@@ -809,7 +812,9 @@ def run_tool_direct(
 
 
 async def run_tool_direct_async(
-    tool_identifier: str, parameters: Optional[Dict[str, Any]] = None
+    tool_identifier: str,
+    parameters: Optional[Dict[str, Any]] = None,
+    tldr_separate: bool = False,
 ) -> str | tuple[str, str | None] | None:
     parameters = parameters or {}
 
@@ -840,6 +845,7 @@ async def run_tool_direct_async(
             tool_identifier,
             entry["function"],
             history,
+            tldr_separate=tldr_separate,
             **parameters,
         )
     except TypeError as err:

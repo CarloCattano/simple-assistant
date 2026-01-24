@@ -38,14 +38,16 @@ def format_tldr_text(
     """
     if not tldr:
         return ""
+
     if markdown:
         if tool_name:
-            return f"*{escape_markdown_v2(tool_name)} TLDR:*\n{tldr}"
+            title = f"*{escape_markdown_v2(tool_name)} TLDR:*"
+            return f"{title}\n{tldr}"
         return f"*TLDR:*\n{tldr}"
     else:
         if tool_name:
             return f"{tool_name} TLDR:\n{tldr}"
-        return f"TLDR:\n{tldr}"
+        return f"TLDR:\n{tldr}""
 
 
 # --- TLDR Sending ---

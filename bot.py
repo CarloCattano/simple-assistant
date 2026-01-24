@@ -16,39 +16,42 @@ from handlers.commands import (
     handle_prompt_decision,
     handle_tts_request,
     help_command,
-    show_flow,
-    show_history,
+    scrape_command,
     set_audio_mode,
     set_text_mode,
+    show_flow,
+    show_history,
     start,
+    tldr_callback_handler,
     tool_command,
-    web_command,
     transcribe_text,
+    web_command,
 )
-from handlers.messages import handle_edited_message, handle_message
 from handlers.media import handle_image, handle_tool_audio_choice, voice_handler
-
+from handlers.messages import handle_edited_message, handle_message
 
 LOG_LEVEL = logging.WARNING
 
 CMD_START = "start"
-CMD_HELP =  "help"
+CMD_HELP = "help"
 CMD_HISTORY = "history"
-CMD_FLOW =  "flow"
-CMD_TOOL =  "tool"
+CMD_FLOW = "flow"
+CMD_TOOL = "tool"
 CMD_AGENT = "agent"
-CMD_WEB =   "web"
+CMD_WEB = "web"
 CMD_CLEAR = "clear"
 CMD_AUDIO = "audio"
-CMD_TEXT =  "text"
+CMD_TEXT = "text"
 CMD_CHEAT = "cheat"
+CMD_SCRAPE = "scrape"
 
 # start - Start interaction with the bot
 # help - Show this help message
 # text - Set to text Mode
 # audio - Set to audio Mode
-# web - Web search 
-# agent - runs commands 
+# web - Web search
+# agent - runs commands
+# scrape - Scrape web content
 # clear - Clear conversation history
 # flow - Shows history flow
 # tool - Use agentic tools
@@ -65,7 +68,7 @@ logging.basicConfig(level=LOG_LEVEL)
 
 
 def main():
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app = Application.builder().token(TELEGRAM_TOKEN or "").build()
 
     command_handlers = [
         (CMD_START, start),
@@ -75,6 +78,7 @@ def main():
         (CMD_TOOL, tool_command),
         (CMD_AGENT, agent_command),
         (CMD_WEB, web_command),
+        (CMD_SCRAPE, scrape_command),
         (CMD_CHEAT, cheat_command),
         (CMD_CLEAR, clear_user_history),
         (CMD_AUDIO, set_audio_mode),
@@ -92,6 +96,12 @@ def main():
 
     for handler, pattern in callback_handlers:
         app.add_handler(CallbackQueryHandler(handler, pattern=pattern))
+
+    # Register TLDR callback handlers
+    app.add_handler(
+        CallbackQueryHandler(tldr_callback_handler, pattern="^show_tldr\\|")
+    )
+    app.add_handler(CallbackQueryHandler(tldr_callback_handler, pattern="^skip_tldr$"))
 
     app.add_handler(MessageHandler(filters.TEXT & filters.FORWARDED, transcribe_text))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

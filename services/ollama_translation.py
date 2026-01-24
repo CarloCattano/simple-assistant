@@ -2,18 +2,19 @@ import re
 from typing import Optional
 
 from ollama import chat
+
 from config import DEBUG_OLLAMA, DEBUG_TOOL_DIRECTIVES
 from services.ollama_shared import (
     COMMAND_TRANSLATOR_SYSTEM_PROMPT,
-    QUERY_TRANSLATOR_SYSTEM_PROMPT,
     MODEL_NAME,
+    QUERY_TRANSLATOR_SYSTEM_PROMPT,
 )
-from utils.logger import logger
 from utils.command_guard import (
     detect_direct_command,
-    sanitize_command,
     get_last_sanitize_error,
+    sanitize_command,
 )
+from utils.logger import logger
 
 # COMMAND_TRANSLATOR_SYSTEM_PROMPT, QUERY_TRANSLATOR_SYSTEM_PROMPT and MODEL_NAME
 # are imported from services.ollama_shared
@@ -22,7 +23,11 @@ _last_command_translation_error: Optional[str] = None
 
 from utils.logger import debug_payload
 
-_debug = lambda *args, **kwargs: debug_payload(*args, **kwargs) if DEBUG_OLLAMA or DEBUG_TOOL_DIRECTIVES else None
+_debug = (
+    lambda *args, **kwargs: debug_payload(*args, **kwargs)
+    if DEBUG_OLLAMA or DEBUG_TOOL_DIRECTIVES
+    else None
+)
 
 
 def _set_last_command_translation_error(reason: Optional[str]) -> None:
@@ -91,7 +96,9 @@ def translate_instruction_to_command(instruction: str) -> Optional[str]:
                 "command_translation_none",
                 {"instruction": instruction, "reason": "model_returned_NONE"},
             )
-            _set_last_command_translation_error("model explicitly replied with NONE (no safe command)")
+            _set_last_command_translation_error(
+                "model explicitly replied with NONE (no safe command)"
+            )
             return None
 
         sanitized = sanitize_command(command)
@@ -127,7 +134,10 @@ def translate_instruction_to_command(instruction: str) -> Optional[str]:
                 )
                 return fallback
 
-        sanitize_reason = get_last_sanitize_error() or "sanitize_command rejected the suggested command as unsafe"
+        sanitize_reason = (
+            get_last_sanitize_error()
+            or "sanitize_command rejected the suggested command as unsafe"
+        )
         _debug(
             "command_translation_rejected",
             {
@@ -166,6 +176,12 @@ def translate_instruction_to_query(instruction: str) -> Optional[str]:
 
         if query.upper() == "NONE":
             return None
+
+        # Strip surrounding quotes to avoid web search issues
+        if (query.startswith('"') and query.endswith('"')) or (
+            query.startswith("'") and query.endswith("'")
+        ):
+            query = query[1:-1]
 
         return query
     except Exception as err:

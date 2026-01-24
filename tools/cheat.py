@@ -1,6 +1,8 @@
-from typing import Dict, Any
-import requests
 import re
+from typing import Any, Dict
+
+import requests
+
 
 
 def clean_cheat_output(text: str) -> str:
@@ -23,7 +25,11 @@ def fetch_cheat(command: str) -> str:
     primary = command.strip().split()[0]
     url = f"http://cheat.sh/{primary}"
     try:
-        resp = requests.get(url, timeout=5, headers={"User-Agent": "curl 8.18.0 (x86_64-pc-linux-gnu) libcurl/8.18.0"})
+        resp = requests.get(
+            url,
+            timeout=5,
+            headers={"User-Agent": "curl 8.18.0 (x86_64-pc-linux-gnu) libcurl/8.18.0"},
+        )
         if resp.status_code == 200 and resp.text:
             return clean_cheat_output(resp.text)
         return f"Error fetching cheat.sh for {primary}: status {resp.status_code}"
@@ -36,5 +42,10 @@ tool = {
     "function": fetch_cheat,
     "triggers": ["cheat", "cheat.sh", "help"],
     "description": "Fetch plain-text usage/help from cheat.sh for a given command",
-    "parameters": {"command": {"type": "string", "description": "Primary command to lookup on cheat.sh"}},
+    "parameters": {
+        "command": {
+            "type": "string",
+            "description": "Primary command to lookup on cheat.sh",
+        }
+    },
 }

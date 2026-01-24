@@ -1,7 +1,7 @@
-from typing import Dict, List, Any
 import subprocess
+from typing import Any, Dict
 
-from utils.command_guard import sanitize_command, get_last_sanitize_error
+from utils.command_guard import get_last_sanitize_error, sanitize_command
 
 
 class ShellAgent:
@@ -87,4 +87,3 @@ tool = {
         "prompt": {"type": "string", "description": "Shell command to execute"}
     },
 }
-

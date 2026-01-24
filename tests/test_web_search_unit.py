@@ -25,20 +25,18 @@ class WebSearchHelpersTests(unittest.TestCase):
         self.assertLessEqual(len(truncated), 140)
 
     def test_format_search_result_summary_only(self):
-        out = ws._format_search_result("Summary here", [])
+        out = ws._format_search_result([("Summary here", "")])
         self.assertEqual(out, "Summary here")
 
     def test_format_search_result_links_and_summary(self):
-        summary = "Summary here"
-        links = ["example.com/one", "example.com/two"]
-        out = ws._format_search_result(summary, links)
+        pairs = [("Summary here", "example.com/one"), ("", "example.com/two")]
+        out = ws._format_search_result(pairs)
         self.assertIn("Summary here", out)
-        self.assertIn("**Links:**", out)
         self.assertIn("- example.com/one", out)
         self.assertIn("- example.com/two", out)
 
     def test_format_search_result_empty(self):
-        out = ws._format_search_result("", [])
+        out = ws._format_search_result([])
         self.assertEqual(out, "No results found.")
 
 

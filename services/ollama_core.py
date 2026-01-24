@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import threading
 import uuid
@@ -7,14 +8,23 @@ from datetime import datetime
 from logging import DEBUG, Logger
 from typing import Any, Dict, List, Optional, Tuple
 
-import os
 from ollama import chat as _ollama_chat
-from config import DEBUG_OLLAMA, DEBUG_TOOL_DIRECTIVES, SYSTEM_PROMPT
-from utils.logger import logger, GREEN, RST
-from services.ollama_shared import MODEL_NAME, MAX_HISTORY_LENGTH, MAX_TOOL_OUTPUT_IN_HISTORY
+
+from config import (
+    DEBUG_HISTORY_STATE,
+    DEBUG_OLLAMA,
+    DEBUG_TOOL_DIRECTIVES,
+    SYSTEM_PROMPT,
+)
+from services.ollama_shared import (
+    MAX_HISTORY_LENGTH,
+    MAX_TOOL_OUTPUT_IN_HISTORY,
+    MODEL_NAME,
+)
+from utils.logger import GREEN, RST, logger
 
 if hasattr(_ollama_chat, "chat"):
-    chat = _ollama_chat.chat
+    chat = _ollama_chat
 else:
     chat = _ollama_chat
 
@@ -31,17 +41,43 @@ OLLAMA_URL = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
 
 from utils.logger import debug_payload
 
-_debug = lambda *args, **kwargs: debug_payload(*args, **kwargs) if DEBUG_OLLAMA or DEBUG_TOOL_DIRECTIVES else None
+_debug = (
+    lambda *args, **kwargs: debug_payload(*args, **kwargs)
+    if DEBUG_OLLAMA or DEBUG_TOOL_DIRECTIVES
+    else None
+)
+
+
+def _redact_system_content_in_messages(
+    messages: List[Dict[str, str]],
+) -> List[Dict[str, str]]:
+    """Return a copy of messages with system role content redacted for logging."""
+    sanitized: List[Dict[str, str]] = []
+    for m in messages:
+        if m.get("role") == "system":
+            sanitized.append({**m, "content": "<REDACTED_SYSTEM_PROMPT>"})
+        else:
+            sanitized.append(m)
+    return sanitized
+
+
+def _sanitize_payload(payload: Any) -> Any:
+    """Sanitize common payload structures (e.g., dicts with a 'messages' key) to avoid logging system prompts."""
+    if isinstance(payload, dict):
+        p = dict(payload)
+        if "messages" in p and isinstance(p["messages"], list):
+            p["messages"] = _redact_system_content_in_messages(p["messages"])
+    return payload
 
 
 def generate_simple_response(prompt: str) -> str:
     """Generate a simple response without history or tools."""
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": prompt}
+        {"role": "user", "content": prompt},
     ]
     response = chat(model=MODEL_NAME, messages=messages, keep_alive=0)
-    return response.message.content
+    return response.message.content or ""
 
 
 def _get_or_create_user_id() -> str:
@@ -63,7 +99,11 @@ def _trim_history(history: List[Dict[str, str]]) -> None:
 
 
 def generate_content(prompt: str) -> str | tuple[str, str | None]:
-    from services.ollama_tools import evaluate_tool_usage, call_tool_with_tldr, available_functions
+    from services.ollama_tools import (
+        available_functions,
+        call_tool_with_tldr,
+        evaluate_tool_usage,
+    )
 
     user_id = _get_or_create_user_id()
     history = user_histories.setdefault(user_id, [])
@@ -74,13 +114,14 @@ def generate_content(prompt: str) -> str | tuple[str, str | None]:
     history.append({"role": "user", "content": prompt})
     _trim_history(history)
     _record_event("user", prompt, user_id=user_id)
-    _debug(
-        "history_after_user",
-        {
-            "user_id": user_id,
-            "entries": history,
-        },
-    )
+    if DEBUG_HISTORY_STATE:
+        _debug(
+            "history_after_user",
+            {
+                "user_id": user_id,
+                "entries": _redact_system_content_in_messages(history),
+            },
+        )
 
     try:
         use_tools, matched_tools = evaluate_tool_usage(prompt)
@@ -96,7 +137,10 @@ def generate_content(prompt: str) -> str | tuple[str, str | None]:
 
         _debug(
             "chat_request",
-            {"messages": messages, "tools": list(available_functions.keys())},
+            {
+                "messages": _redact_system_content_in_messages(messages),
+                "tools": list(available_functions.keys()),
+            },
         )
 
         tool_pool = matched_tools if matched_tools else available_functions
@@ -122,22 +166,35 @@ def generate_content(prompt: str) -> str | tuple[str, str | None]:
             keep_alive=0,
             tools=tool_defs,
         )
-        response_payload = (
-            response.dict()
-            if hasattr(response, "dict")
-            else getattr(response, "__dict__", response)
-        )
-        _debug("chat_response", response_payload)
+        # Log only the assistant's message content to avoid recording full payloads
+        # and avoid including null fields in logs.
+        response_message_content = None
+        try:
+            response_message_content = getattr(response.message, "content", None)
+        except Exception:
+            response_message_content = None
+        log_payload: Dict[str, Any] = {}
+        if response_message_content is not None:
+            log_payload["message_content"] = response_message_content
+        # Only send a debug payload if there is at least one non-null field to avoid logging nulls
+        if log_payload:
+            _debug("chat_response", log_payload)
 
         if response.message.tool_calls:
             # Add the assistant's message with tool calls to history for context
             assistant_message = {
                 "role": "assistant",
                 "content": response.message.content or "",
-                "tool_calls": [call.dict() if hasattr(call, 'dict') else call for call in response.message.tool_calls]
+                "tool_calls": [
+                    call.model_dump() if hasattr(call, "model_dump") else call
+                    for call in response.message.tool_calls
+                ],
             }
             history.append(assistant_message)
-            _debug("tool_calls", [call.function.name for call in response.message.tool_calls])
+            _debug(
+                "tool_calls",
+                [call.function.name for call in response.message.tool_calls],
+            )
             for tool in response.message.tool_calls:
                 func_entry = available_functions.get(tool.function.name)
                 if func_entry and (
@@ -158,20 +215,28 @@ def generate_content(prompt: str) -> str | tuple[str, str | None]:
                     )
                     return output
                 else:
-                    logger.warn(f"Tool {tool.function.name} not found in available functions.")
+                    logger.warning(
+                        f"Tool {tool.function.name} not found in available functions."
+                    )
 
-        reply = response.message.content
+        reply = response.message.content or ""
         # Try to parse tool call from content
-        tool_call_in_text = re.search(r'"name":\s*"(\w+)",\s*"parameters":\s*({.*?})', reply, re.DOTALL)
+        tool_call_in_text = re.search(
+            r'"name":\s*"(\w+)",\s*"parameters":\s*({.*?})', reply, re.DOTALL
+        )
         if tool_call_in_text:
             tool_name = tool_call_in_text.group(1)
             parameters_str = tool_call_in_text.group(2)
             try:
                 parameters = json.loads(parameters_str)
             except Exception as e:
-                _debug("json_load_failed", {"error": str(e), "parameters_str": parameters_str})
+                _debug(
+                    "json_load_failed",
+                    {"error": str(e), "parameters_str": parameters_str},
+                )
                 parameters = {}
             from services.ollama_tools import run_tool_direct
+
             tool_output = run_tool_direct(tool_name, parameters)
             if tool_output is not None:
                 # Add the tool output to history as assistant message
@@ -214,7 +279,12 @@ MAX_EVENT_TEXT = 400
 _event_log: deque[Dict[str, Any]] = deque(maxlen=EVENT_LOG_LIMIT)
 
 
-def _record_event(kind: str, message: str, extra: Optional[Dict[str, Any]] = None, user_id: Optional[str] = None) -> None:
+def _record_event(
+    kind: str,
+    message: str,
+    extra: Optional[Dict[str, Any]] = None,
+    user_id: Optional[str] = None,
+) -> None:
     event = {
         "timestamp": datetime.now().isoformat(),
         "kind": kind,

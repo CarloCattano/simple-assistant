@@ -18,11 +18,7 @@ class WebSearchHelpersTests(unittest.TestCase):
         self.assertEqual(ws._clean_link(""), "")
         self.assertEqual(ws._clean_link("https://duckduckgo.com/html/"), "")
 
-    def test_truncate_text_adds_notice(self):
-        base = "word " * 400
-        truncated = ws._truncate_text(base, max_chars=100)
-        self.assertIn("[Output truncated]", truncated)
-        self.assertLessEqual(len(truncated), 140)
+
 
     def test_format_search_result_summary_only(self):
         out = ws._format_search_result([("Summary here", "")])

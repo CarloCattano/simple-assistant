@@ -10,11 +10,10 @@ import os
 import re
 from ollama import chat as _ollama_chat
 from tools import load_tools
-from config import SYSTEM_PROMPT
-from utils import logger
+from config import DEBUG_OLLAMA, DEBUG_TOOL_DIRECTIVES,  SYSTEM_PROMPT
+from utils.logger import logger, GREEN, RST
 from utils.command_guard import (
     detect_direct_command,
-    heuristic_command,
     sanitize_command,
     get_last_sanitize_error,
 )
@@ -33,15 +32,15 @@ CONTENT_REPORTER_SCRIPT_PROMPT = (
 
 COMMAND_TRANSLATOR_SYSTEM_PROMPT = (
     "You convert natural language requests into a single Linux shell commands. "
-    "Do not replace literal shell commands that the user already wrote with similar ones. "
+    "Use relative path for commands as a user would do. Add subtasks if needed with ; or &&. " 
+    "Avoid cd and commands that will cause an interactive shell to stall, you are not in an interactive shell. "
+    "Pipes and multiple commands on the same line are allowed though. "
+    "prefer rg over grep for searching text in files recursively ie rg 'search_term' ./folder "
     "Respond ONLY with the exact command, making sure any quotes are properly closed "
     "(for example: echo \"Hello World\"). Always close every opening quote character; "
     "never leave a string unterminated. "
     "Do not add commentary, shell prompts, explanations, or additional lines. "
-    "For requests about listing or inspecting files or directories, prefer safe commands such as 'ls', 'ls -lah', 'ls -lt', or 'find'. "
-    "For requests about controlling music playback, prefer 'playerctl' subcommands like 'playerctl play', 'playerctl pause', 'playerctl next', or 'playerctl previous'. "
-    "If the request could reasonably be mapped to a read-only command using these tools, you MUST output that command instead of NONE. "
-    "Only respond with the single word NONE when it is impossible to infer any safe, non-destructive command."
+    "Infer requests from trying allowed commands , i.e For requests about controlling music playback, prefer 'playerctl' subcommands like 'playerctl play', 'playerctl pause', 'playerctl next', or 'playerctl previous'. "
 )
 
 QUERY_TRANSLATOR_SYSTEM_PROMPT = (
@@ -60,13 +59,15 @@ user_histories: Dict[str, List[Dict[str, str]]] = {}
 
 MODEL_NAME = "llama3.2"
 
-MAX_HISTORY_LENGTH = 40
+MAX_HISTORY_LENGTH = 400
+MAX_TOOL_OUTPUT_IN_HISTORY = 1000  # Truncate tool outputs in history to this length
 
 available_functions = load_tools()
 
-logger.debug(
-    f"Loaded {len(available_functions)} tools for Ollama. {list(available_functions.keys())}"
-)
+if DEBUG_OLLAMA:
+    logger.debug(
+        f"Loaded {len(available_functions)} tools for Ollama. {list(available_functions.keys())}"
+    )
 
 TOOL_MODE = False
 
@@ -80,37 +81,28 @@ _event_log: deque[Dict[str, Any]] = deque(maxlen=EVENT_LOG_LIMIT)
 _last_command_translation_error: Optional[str] = None
 
 
-def _debug_dump(label: str, payload: Any) -> None:
-    log_instance = getattr(logger, "logger", None)
-    if isinstance(log_instance, Logger):
-        if not log_instance.isEnabledFor(DEBUG):
-            return
-    elif isinstance(logger, Logger):
-        log_instance = logger
-        if not log_instance.isEnabledFor(DEBUG):
-            return
-    else:
-        return
 
-    try:
-        serialized = json.dumps(payload, indent=2, sort_keys=True, default=str)
-    except (TypeError, ValueError):
-        serialized = repr(payload)
+from utils.logger import debug_payload
 
-    if log_instance is not None:
-        log_instance.debug(f"[debug] {label}: {serialized}")
-    elif hasattr(logger, "debug"):
-        logger.debug(f"[debug] {label}: {serialized}")
+_debug = lambda *args, **kwargs: debug_payload(*args, **kwargs) if DEBUG_OLLAMA or DEBUG_TOOL_DIRECTIVES else None
 
 
 def evaluate_tool_usage(prompt: str) -> Tuple[bool, Dict[str, dict]]:
     assert isinstance(prompt, str)
     lower_prompt = prompt.lower()
 
+    if prompt.startswith("Given this shell output:") or "answer this question:" in lower_prompt:
+        return False, {}
+
+    if "previous command:" in lower_prompt:
+        shell_agent_entry = available_functions.get("shell_agent")
+        if shell_agent_entry:
+            return True, {"shell_agent": shell_agent_entry}
+
     matched_tools = {
         name: entry
         for name, entry in available_functions.items()
-        if any(trigger in lower_prompt for trigger in entry.get("triggers", []))
+        if any(re.match(r'\b' + re.escape(trigger) + r'\b', lower_prompt) for trigger in entry.get("triggers", []))
     }
 
     should_use = bool(matched_tools) or TOOL_MODE
@@ -119,7 +111,7 @@ def evaluate_tool_usage(prompt: str) -> Tuple[bool, Dict[str, dict]]:
 
 
 
-def generate_content(prompt: str) -> str:
+def generate_content(prompt: str) -> str | tuple[str, str | None]:
     user_id = _get_or_create_user_id()
     history = user_histories.setdefault(user_id, [])
 
@@ -128,8 +120,8 @@ def generate_content(prompt: str) -> str:
     # Add user message
     history.append({"role": "user", "content": prompt})
     _trim_history(history)
-    _record_event("user", prompt)
-    _debug_dump(
+    _record_event("user", prompt, user_id=user_id)
+    _debug(
         "history_after_user",
         {
             "user_id": user_id,
@@ -139,7 +131,7 @@ def generate_content(prompt: str) -> str:
 
     try:
         use_tools, matched_tools = evaluate_tool_usage(prompt)
-        _debug_dump(
+        _debug(
             "tool_evaluation",
             {
                 "prompt": prompt,
@@ -149,7 +141,7 @@ def generate_content(prompt: str) -> str:
         )
         messages = history
 
-        _debug_dump(
+        _debug(
             "chat_request",
             {"messages": messages, "tools": list(available_functions.keys())},
         )
@@ -170,16 +162,23 @@ def generate_content(prompt: str) -> str:
             if hasattr(response, "dict")
             else getattr(response, "__dict__", response)
         )
-        _debug_dump("chat_response", response_payload)
+        _debug("chat_response", response_payload)
 
         if response.message.tool_calls:
-            _debug_dump("tool_calls", [call.function.name for call in response.message.tool_calls])
+            # Add the assistant's message with tool calls to history for context
+            assistant_message = {
+                "role": "assistant",
+                "content": response.message.content or "",
+                "tool_calls": [call.dict() if hasattr(call, 'dict') else call for call in response.message.tool_calls]
+            }
+            history.append(assistant_message)
+            _debug("tool_calls", [call.function.name for call in response.message.tool_calls])
             for tool in response.message.tool_calls:
                 func_entry = available_functions.get(tool.function.name)
                 if func_entry and (
                     not matched_tools or tool.function.name in matched_tools
                 ):
-                    _debug_dump(
+                    _debug(
                         "executing_tool",
                         {
                             "tool": tool.function.name,
@@ -199,7 +198,7 @@ def generate_content(prompt: str) -> str:
         reply = response.message.content
         history.append({"role": "assistant", "content": reply})
         _record_event("assistant", reply)
-        _debug_dump(
+        _debug(
             "assistant_reply",
             {
                 "user_id": user_id,
@@ -291,7 +290,7 @@ def call_tool_with_tldr(
             has_error = exit_code not in (0, None)
 
             lower_err = stderr.lower()
-            if not has_error and stderr and not stdout:
+            if not has_error and stderr:
                 for marker in (
                     "unknown option",
                     "unrecognized option",
@@ -299,27 +298,38 @@ def call_tool_with_tldr(
                     "command not found",
                     "permission denied",
                     "no such file or directory",
+                    "cannot access",
+                    "not found",
+                    "no such file or directory",
+                    "failed",
+                    "error",
                 ):
                     if marker in lower_err:
                         has_error = True
                         break
 
+            # If command succeeded but produced no output, consider it a failure
+            # Most information-gathering commands should produce at least some output
+            if not has_error and exit_code == 0 and not stdout.strip():
+                has_error = True
+
             if not has_error:
                 break
+
+            logger.info(f"shell_agent attempt {attempt} failed: exit_code={exit_code}, stderr={stderr!r}, stdout={stdout!r}")
 
             original_prompt = working_arguments.get("prompt")
             if not isinstance(original_prompt, str) or not translate_instruction_to_command:
                 break
 
             context_instruction = (
-                f"{original_prompt}\n\n"
-                f"Previous command: {last_output.get('command')!r} "
-                f"returned exit_code={exit_code} with stderr: {stderr!r}. "
-                "Suggest a different safe single-line shell command that might succeed."
+                f"The command '{last_output.get('command')}' failed. "
+                f"Suggest a simple alternative command for the same task: {original_prompt}"
             )
 
             new_command = translate_instruction_to_command(context_instruction)
-            if not new_command or new_command == working_arguments.get("prompt"):
+            if not new_command:
+                logger.info(f"shell_agent retry {attempt}/{max_attempts}: no new command generated, aborting retry")
                 break
 
             logger.info(
@@ -331,7 +341,7 @@ def call_tool_with_tldr(
     else:
         raw_output = tool_callable(**working_arguments)
     raw_text = _format_tool_output(tool_name, raw_output)
-    _debug_dump(
+    _debug(
         "tool_raw_output",
         {
             "tool": tool_name,
@@ -340,10 +350,12 @@ def call_tool_with_tldr(
         },
     )
 
-    history.append({"role": "tool", "name": tool_name, "content": raw_text})
+    # Truncate tool output for history to keep it manageable
+    truncated_text = raw_text[:MAX_TOOL_OUTPUT_IN_HISTORY] + ("..." if len(raw_text) > MAX_TOOL_OUTPUT_IN_HISTORY else "")
+    
+    history.append({"role": "tool", "name": tool_name, "content": truncated_text})
 
     trimmed_for_log = _truncate_event_text(raw_text)
-    logger.info(f"Tool {tool_name} output:\n{trimmed_for_log}")
 
     _record_event(
         "tool_call",
@@ -353,17 +365,10 @@ def call_tool_with_tldr(
             "output": raw_text,
         },
     )
-    _debug_dump(
-        "history_after_tool",
-        {
-            "tool": tool_name,
-            "history_size": len(history),
-            "last_entry": history[-1] if history else None,
-        },
-    )
 
     if tool_name == "shell_agent":
-        logger.info("Skipping TLDR for shell_agent; returning raw tool output only.")
+        if DEBUG_OLLAMA or DEBUG_TOOL_DIRECTIVES:
+            logger.info("Skipping TLDR for shell_agent; returning raw tool output only.")
         return raw_text if not tldr_separate else (raw_text, None)
 
     summary = None
@@ -374,9 +379,10 @@ def call_tool_with_tldr(
 
     if summary:
         summary_text = summary
-        logger.info(f"TLDR ready for {tool_name}: {summary_text}")
+        if DEBUG_OLLAMA or DEBUG_TOOL_DIRECTIVES:
+            logger.info(f"TLDR ready for {tool_name}: {summary_text}")
         _record_event("tldr", f"{tool_name}: {summary_text}")
-        _debug_dump(
+        _debug(
             "tldr_summary",
             {
                 "tool": tool_name,
@@ -391,9 +397,10 @@ def call_tool_with_tldr(
         )
         try:
             audio_script = build_audio_script(summary_text) or summary_text
-            logger.info(
-                f"Queued TLDR audio script for {tool_name}: {audio_script}"
-            )
+            if DEBUG_OLLAMA or DEBUG_TOOL_DIRECTIVES:
+                logger.info(
+                    f"Queued TLDR audio script for {tool_name}: {audio_script}"
+                )
             _set_last_tool_audio(
                 {
                     "summary": summary_text,
@@ -402,7 +409,7 @@ def call_tool_with_tldr(
                 }
             )
             _record_event("audio_queue", f"Queued TLDR audio for {tool_name}")
-            _debug_dump(
+            _debug(
                 "audio_queue_payload",
                 {
                     "tool": tool_name,
@@ -445,15 +452,21 @@ def _format_tool_output(tool_name: str, raw_output: Any) -> str:
                 lines.append(f"Exit code: {exit_code}")
 
             if stdout:
+                stdout_str = stdout.strip()
+                if len(stdout_str) > 16000:  # Truncate very long stdout
+                    stdout_str = stdout_str[:16000] + "\n... (output truncated)"
                 lines.append("Stdout:")
-                lines.append(stdout.strip())
+                lines.append(stdout_str)
 
             if stderr:
                 lines.append("Stderr:")
                 lines.append(stderr.strip())
         else:
             if stdout:
-                lines.append(stdout.strip())
+                stdout_str = stdout.strip()
+                if len(stdout_str) > 16000:  # Truncate very long stdout
+                    stdout_str = stdout_str[:16000] + "\n... (output truncated)"
+                lines.append(stdout_str)
             elif exit_code is not None:
                 lines.append(f"Exit code: {exit_code}")
 
@@ -503,7 +516,7 @@ def _trim_history(history: List[Dict[str, str]]) -> None:
 
 def run_tool_direct(
     tool_identifier: str, parameters: Optional[Dict[str, Any]] = None
-) -> Optional[str]:
+) -> str | tuple[str, str | None] | None:
     parameters = parameters or {}
 
     resolved = _resolve_tool_entry(tool_identifier)
@@ -521,7 +534,7 @@ def run_tool_direct(
         f"Direct tool request: {tool_identifier}",
         {"parameters": _stringify_data(parameters)},
     )
-    _debug_dump(
+    _debug(
         "direct_tool_request",
         {
             "tool": tool_identifier,
@@ -617,45 +630,33 @@ def translate_instruction_to_command(instruction: str) -> Optional[str]:
         return None
 
     _set_last_command_translation_error(None)
-    _debug_dump("command_translation_input", {"instruction": instruction})
+    _debug("command_translation_input", {"instruction": instruction})
 
     direct = detect_direct_command(instruction)
     if direct:
-        _debug_dump("command_translation_direct", direct)
+        _debug("command_translation_direct", direct)
         _set_last_command_translation_error(None)
         return direct
-
-    heuristic = heuristic_command(instruction)
-    if heuristic:
-        sanitized = sanitize_command(heuristic)
-        if sanitized:
-            _debug_dump("command_translation_heuristic", sanitized)
-            _set_last_command_translation_error(None)
-            return sanitized
 
     messages = [
         {"role": "system", "content": COMMAND_TRANSLATOR_SYSTEM_PROMPT},
         {"role": "user", "content": instruction},
     ]
-    _debug_dump("command_translation_request", messages)
+    _debug("command_translation_request", messages)
 
     try:
         response = chat(model=MODEL_NAME, messages=messages, keep_alive=0)
         command = (response.message.content or "").strip()
-        _debug_dump("command_translation_response", command)
+        _debug("command_translation_response", command)
 
         if command.lower().startswith("command:"):
             command = command.split(":", 1)[1].strip()
-
-        for fence in ("```", "'''", "`", '"', "'"):
-            if command.startswith(fence) and command.endswith(fence):
-                command = command[len(fence) : -len(fence)].strip()
 
         if "\n" in command:
             command = command.splitlines()[0].strip()
 
         if command.upper() == "NONE":
-            _debug_dump(
+            _debug(
                 "command_translation_none",
                 {"instruction": instruction, "reason": "model_returned_NONE"},
             )
@@ -664,7 +665,7 @@ def translate_instruction_to_command(instruction: str) -> Optional[str]:
 
         sanitized = sanitize_command(command)
         if sanitized:
-            _debug_dump("command_translation_sanitized", sanitized)
+            _debug("command_translation_sanitized", sanitized)
             _set_last_command_translation_error(None)
             return sanitized
 
@@ -674,7 +675,7 @@ def translate_instruction_to_command(instruction: str) -> Optional[str]:
             if fixed and fixed != command:
                 fixed_sanitized = sanitize_command(fixed)
                 if fixed_sanitized:
-                    _debug_dump("command_translation_quote_fix", fixed_sanitized)
+                    _debug("command_translation_quote_fix", fixed_sanitized)
                     _set_last_command_translation_error(None)
                     return fixed_sanitized
 
@@ -683,7 +684,7 @@ def translate_instruction_to_command(instruction: str) -> Optional[str]:
         if leading and leading != command:
             fallback = sanitize_command(leading)
             if fallback:
-                _debug_dump(
+                _debug(
                     "command_translation_sanitized_fallback",
                     {
                         "instruction": instruction,
@@ -697,7 +698,7 @@ def translate_instruction_to_command(instruction: str) -> Optional[str]:
                 return fallback
 
         sanitize_reason = get_last_sanitize_error() or "sanitize_command rejected the suggested command as unsafe"
-        _debug_dump(
+        _debug(
             "command_translation_rejected",
             {
                 "instruction": instruction,
@@ -723,19 +724,19 @@ def translate_instruction_to_query(instruction: str) -> Optional[str]:
         {"role": "user", "content": instruction},
     ]
 
-    _debug_dump("query_translation_request", messages)
+    _debug("query_translation_request", messages)
 
     try:
         response = chat(model=MODEL_NAME, messages=messages, keep_alive=0)
         query = (response.message.content or "").strip()
-        _debug_dump("query_translation_response", query)
+        _debug("query_translation_response", query)
 
         if "\n" in query:
             query = query.splitlines()[0].strip()
 
-        for fence in ("`", '"', "'"):
-            if query.startswith(fence) and query.endswith(fence):
-                query = query[len(fence) : -len(fence)].strip()
+        # for fence in ("`", '"', "'"): # strip surrounding quotes or backticks in order to get cleaner queries
+        #     if query.startswith(fence) and query.endswith(fence):
+        #         query = query[len(fence) : -len(fence)].strip()
 
         if query.upper() == "NONE":
             return None
@@ -749,20 +750,20 @@ def translate_instruction_to_query(instruction: str) -> Optional[str]:
 def get_recent_history(limit: int = 15) -> List[Dict[str, Any]]:
     user_id = _get_or_create_user_id()
     history = user_histories.get(user_id, [])
-    _debug_dump("history_snapshot", {"user_id": user_id, "limit": limit, "history": history})
+    _debug("history_snapshot", {"user_id": user_id, "limit": limit, "history": history})
     if limit <= 0:
         return history
     return history[-limit:]
 
 
 def get_recent_events(limit: int = 20) -> List[Dict[str, Any]]:
-    _debug_dump("event_log_snapshot", {"limit": limit, "events": list(_event_log)})
+    _debug("event_log_snapshot", {"limit": limit, "events": list(_event_log)})
     if limit <= 0:
         return list(_event_log)
     return list(_event_log)[-limit:]
 
 
-def _record_event(kind: str, message: str, extra: Optional[Dict[str, Any]] = None) -> None:
+def _record_event(kind: str, message: str, extra: Optional[Dict[str, Any]] = None, user_id: Optional[str] = None) -> None:
     entry: Dict[str, Any] = {
         "time": datetime.utcnow().strftime("%H:%M:%S"),
         "kind": kind,
@@ -774,14 +775,19 @@ def _record_event(kind: str, message: str, extra: Optional[Dict[str, Any]] = Non
             key: _truncate_event_text(str(value)) for key, value in extra.items()
         }
 
+    if user_id:
+        entry["user_id"] = user_id
+
     _event_log.append(entry)
-    extra_txt = (
-        " "
-        + " ".join(f"{k}={v}" for k, v in entry.get("extra", {}).items())
-        if entry.get("extra")
-        else ""
-    )
-    logger.info(f"[event] {entry['time']} {kind}: {entry['message']}{extra_txt}")
+    if DEBUG_OLLAMA or DEBUG_TOOL_DIRECTIVES:
+        extra_txt = (
+            " "
+            + " ".join(f"{k}={v}" for k, v in entry.get("extra", {}).items())
+            if entry.get("extra")
+            else ""
+        )
+        user_info = f" (user: {user_id})" if user_id else ""
+        logger.info(f"[event] {entry['time']} {kind}: {entry['message']}{extra_txt}{user_info}")
 
 
 def _truncate_event_text(text: str) -> str:

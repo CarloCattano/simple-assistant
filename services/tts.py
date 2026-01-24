@@ -1,7 +1,6 @@
 import asyncio
 import base64
 import html
-import logging
 import re
 import wave
 from typing import Optional
@@ -9,8 +8,7 @@ from typing import Optional
 import requests
 
 from config import GEMINI_KEY
-
-logger = logging.getLogger(__name__)
+from utils.logger import logger
 
 
 TTS_MODEL = "gemini-2.5-flash-preview-tts"

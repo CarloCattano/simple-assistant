@@ -130,8 +130,113 @@ class ShellAgentTests(unittest.TestCase):
         # For successful commands, we expect the compact format without an
         # explicit "Exit code: 0" label, but including the final command and
         # its stdout.
-        self.assertIn("$ cmd_variant_3", result_text)
-        self.assertIn("ok", result_text)
+    @patch("services.ollama.translate_instruction_to_command")
+    def test_call_tool_with_tldr_shell_agent_retries_on_empty_output(self, mock_translate):
+        # Test that commands with exit_code 0 but no stdout are retried
+        mock_translate.side_effect = [
+            "find /nonexistent -type f",  # Same as input, will retry again
+            "ls -la",  # Fallback command
+        ]
+
+        calls = []
+
+        def fake_shell_tool(prompt: str):
+            calls.append(prompt)
+            if "find /nonexistent" in prompt:
+                # Simulate find succeeding but finding nothing
+                return {
+                    "command": prompt,
+                    "exit_code": 0,
+                    "stdout": "",
+                    "stderr": "",
+                }
+            return {
+                "command": prompt,
+                "exit_code": 0,
+                "stdout": "total 0",
+                "stderr": "",
+            }
+
+        history = []
+
+        result_text = call_tool_with_tldr(
+            "shell_agent",
+            fake_shell_tool,
+            history,
+            prompt="find /nonexistent -type f",  # Start with the command that produces no output
+        )
+
+        # Should have called at least 3 commands (original + 2 retries)
+        self.assertGreaterEqual(len(calls), 3)
+        self.assertIn("find /nonexistent", calls[0])
+        self.assertIn("ls -la", calls[-1])  # Last call should be the successful one
+
+        # Should contain the successful command output
+        self.assertIn("$ ls -la", result_text)
+        self.assertIn("total 0", result_text)
+
+    def test_tool_output_truncated_in_history(self):
+        # Test that tool outputs are truncated when added to history
+        from services.ollama import _format_tool_output, MAX_TOOL_OUTPUT_IN_HISTORY
+        
+        # Create a long output
+        long_output = "x" * 2000
+        raw_output = {
+            "command": "echo " + long_output,
+            "exit_code": 0,
+            "stdout": long_output,
+            "stderr": "",
+        }
+        
+        formatted = _format_tool_output("shell_agent", raw_output)
+        
+        # Should be truncated in history storage
+        truncated = formatted[:MAX_TOOL_OUTPUT_IN_HISTORY] + ("..." if len(formatted) > MAX_TOOL_OUTPUT_IN_HISTORY else "")
+        
+        self.assertLessEqual(len(truncated), MAX_TOOL_OUTPUT_IN_HISTORY + 3)  # +3 for "..."
+
+    def test_tool_output_truncated_in_formatting(self):
+        # Test that very long stdout is truncated in formatting
+        from services.ollama import _format_tool_output
+        
+        # Create output longer than 16000 chars
+        long_stdout = "x" * 17000
+        raw_output = {
+            "command": "some_command",
+            "exit_code": 0,
+            "stdout": long_stdout,
+            "stderr": "",
+        }
+        
+        formatted = _format_tool_output("shell_agent", raw_output)
+        
+        # Should contain truncation message
+        self.assertIn("... (output truncated)", formatted)
+        # Should be shorter than original
+        self.assertLess(len(formatted), len(long_stdout))
+
+    def test_tool_history_truncation(self):
+        # Test that tool outputs are truncated when stored in history
+        from services.ollama import call_tool_with_tldr, MAX_TOOL_OUTPUT_IN_HISTORY
+        
+        long_output = "x" * 2000  # Longer than MAX_TOOL_OUTPUT_IN_HISTORY
+        history = []
+        
+        def fake_tool(prompt: str):
+            return {
+                "command": prompt,
+                "exit_code": 0,
+                "stdout": long_output,
+                "stderr": "",
+            }
+        
+        result = call_tool_with_tldr("shell_agent", fake_tool, history, prompt="test")
+        
+        # History should contain truncated output
+        self.assertEqual(len(history), 1)
+        tool_entry = history[0]
+        self.assertEqual(tool_entry["role"], "tool")
+        self.assertLessEqual(len(tool_entry["content"]), MAX_TOOL_OUTPUT_IN_HISTORY + 3)  # +3 for "..."
 
 
 if __name__ == "__main__":

@@ -9,35 +9,45 @@ Tool usage integration and telegram interface
 
 
 ### Usage:
-use the provided ```.env.template``` and fill in your ```GEMINI_API_KEY=``` and ```TELEGRAM_BOT_TOKEN=```
+### Context & Reply-Based Tool Usage
 
-Choose an llm provider (Gemini or local):
-- ```gemini``` or ```ollama``` in the .env file under ```LLM_PROVIDER=```
+This assistant supports context-aware interactions and reply-based tool flows:
 
-```ADMIN_ID``` is your telegram ID, for now nothing is restricted but this is one way to start.
+- **Context History:**
+    - The bot tracks conversation history and tool outputs for each user.
+    - When you reply to a previous message (including tool outputs), your instruction is interpreted in the context of that message.
+    - For example, replying to a `/web` or `/agent` result with a follow-up question will refine or re-run the tool using the previous context.
 
-Rename the file to .env
-```bash
-mv .env.template .env
-```
+- **Replying to Tool Outputs:**
+    - Replying to a tool output (e.g., `/web`, `/agent`, `/tool`, or scraping tools) triggers a context-aware follow-up.
+    - The bot will attempt to translate your reply into a new tool request, using the previous prompt and tool metadata.
+    - If the reply cannot be translated directly, the LLM will attempt to synthesize a valid command or query using the previous context.
 
-Make a virtual environment, install requirements and run:
-```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-python bot.py
+- **History & Metadata:**
+    - Each tool output is associated with its originating prompt and tool metadata.
+    - This enables robust follow-up logic and accurate context for multi-step workflows.
 
-```
+**Tip:** For best results, always reply directly to the relevant tool output or message you want to refine or extend.
+1. Copy `.env.template` to `.env` and fill in your `GEMINI_API_KEY`, `TELEGRAM_BOT_TOKEN`, and `ADMIN_ID`.
+2. Set `LLM_PROVIDER=gemini` or `LLM_PROVIDER=ollama` in `.env`.
+3. Install dependencies and run the bot:
+    ```bash
+    poetry install
+    poetry run python app.py
+    ```
+4. To run tests:
+    ```bash
+    ./run_tests.py
+    ```
 
 ### Shell Agent Tool
 
-The project exposes a shell agent that translates natural language requests to safe commands via the Telegram bot.
+The shell agent translates natural language requests to safe shell commands via Telegram:
 
-- Ensure the bot is running and send a chat message prefixed with `cmd:` (for example, `cmd: list the repo root`).
-- The agent removes shell prompt prefixes, sanitizes the instruction, and when needed calls the optional Ollama translator before execution.
-- Execution results include the final command, stdout, stderr, and a `command_trace` describing each derivation step; these details are logged to `usage.log`.
-- Set `LLM_PROVIDER=ollama` and provide a compatible translator model if you want LLM-backed rewrites of complex prompts.
+- Use `/agent <instruction>` to run a shell command (e.g., `/agent list files in home`).
+- The agent sanitizes and translates instructions, using Ollama if configured.
+- Results include the command, stdout, stderr, and trace details (logged to `usage.log`).
+- Set `LLM_PROVIDER=ollama` for LLM-backed command translation.
 
 
 

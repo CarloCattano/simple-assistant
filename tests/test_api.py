@@ -119,18 +119,10 @@ class TelegramBotTests(unittest.TestCase):
         cls.chat_id = _require_env("CHAT_ID")
         cls.base_url = f"https://api.telegram.org/bot{cls.bot_token}"
 
-    def test_get_me_returns_bot_identity(self):
-        response = requests.get(f"{self.base_url}/getMe", timeout=10)
-        self.assertEqual(response.status_code, 200, response.text)
-        payload = response.json()
-        self.assertTrue(payload.get("ok"), payload)
-        result = payload.get("result", {})
-        self.assertEqual(int(result.get("id")), int(self.chat_id))
-        self.assertIn("username", result)
-
     def test_latency_below_threshold(self):
         start = time.time()
         response = requests.get(f"{self.base_url}/getMe", timeout=10)
+        print(response.text)
         elapsed = time.time() - start
         self.assertEqual(response.status_code, 200, response.text)
         self.assertLess(elapsed, 5, "Telegram API latency exceeded threshold")

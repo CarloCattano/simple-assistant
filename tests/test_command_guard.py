@@ -2,7 +2,6 @@ import unittest
 
 from utils.command_guard import (
     detect_direct_command,
-    heuristic_command,
     sanitize_command,
 )
 
@@ -40,14 +39,6 @@ class CommandGuardTests(unittest.TestCase):
 
     def test_detect_direct_command_rejects_unclosed_quote(self):
         self.assertIsNone(detect_direct_command('"ls -lah'))
-
-    def test_heuristic_disabled_returns_none_for_listing(self):
-        instruction = "list all files in /bin"
-        self.assertIsNone(heuristic_command(instruction))
-
-    def test_heuristic_disabled_returns_none_for_generic_request(self):
-        instruction = "calculate 1 plus 1"
-        self.assertIsNone(heuristic_command(instruction))
 
 
 if __name__ == "__main__":

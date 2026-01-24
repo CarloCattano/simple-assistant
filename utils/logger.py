@@ -9,17 +9,18 @@ except ImportError:  # pragma: no cover - telegram is only required for the bot 
 
 from config import ADMIN_ID
 
-RED_COL = "\033[91m"
-GREEN_COL = "\033[92m"
+RED = "\033[91m"
+GREEN = "\033[92m"
+YELLOW = "\033[93m"
 RST = "\033[0m"
 
 logger = logging.getLogger("usage")
 
-_level_name = os.getenv("LOG_LEVEL", "INFO").upper()
+_level_name = os.getenv("LOG_LEVEL", "WARNING").upper()
 _level = getattr(logging, _level_name, logging.INFO)
 
 handler = logging.FileHandler("usage.log")
-formatter = logging.Formatter("%(asctime)s - %(message)s")
+formatter = logging.Formatter("%(message)s")
 handler.setFormatter(formatter)
 handler.setLevel(_level)
 logger.addHandler(handler)
@@ -47,7 +48,7 @@ def log_user_action(action: str, update: Update, extra: str = ""):
     if extra:
         log_entry += f" | Detail: {extra}\n --- \n"
 
-    colored_entry = f"{GREEN_COL}{log_entry}{RST}" if str(user_id) == str(ADMIN_ID) else f"{RED_COL}{log_entry}{RST}"
+    colored_entry = f"{GREEN}{log_entry}{RST}" if str(user_id) == str(ADMIN_ID) else f"{RED}{log_entry}{RST}"
 
     logger.warning(colored_entry)
 
@@ -62,3 +63,27 @@ def warn(msg: str):
 
 def debug(msg: str):
     logger.debug(msg)
+
+def debug_payload(label: str, payload: Any) -> None:
+    from logging import DEBUG, Logger
+    import json
+    log_instance = getattr(logger, "logger", None)
+    if isinstance(log_instance, Logger):
+        if not log_instance.isEnabledFor(DEBUG):
+            return
+    elif isinstance(logger, Logger):
+        log_instance = logger
+        if not log_instance.isEnabledFor(DEBUG):
+            return
+    else:
+        return
+
+    try:
+        serialized = json.dumps(payload, indent=2, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        serialized = repr(payload)
+
+    if log_instance is not None:
+        log_instance.debug(f"{YELLOW}{label}{RST}: {serialized}")
+    elif hasattr(logger, "debug"):
+        logger.debug(f"{YELLOW}{label}{RST}: {serialized}")

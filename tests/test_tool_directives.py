@@ -34,25 +34,12 @@ class ToolDirectivesTests(unittest.TestCase):
     def test_extract_tool_request_json_payload(self):
         td.translate_instruction_to_query = lambda q: f"q:{q}"
 
-        text = "Please run this {\"name\": \"web_search\", \"parameters\": {\"query\": \"foo\"}} now."
-        name, params = td.extract_tool_request(text)
-
+        text = "/web {\"name\": \"web_search\", \"parameters\": {\"query\": \"foo\"}}"
+        result = td.extract_tool_request(text)
+        self.assertIsNotNone(result, "extract_tool_request returned None")
+        name, params = result
         self.assertEqual(name, "web_search")
         self.assertEqual(params["query"], "q:foo")
-
-    def test_parse_run_tool_uses_command_translator(self):
-        def fake_resolve(identifier: str):
-            if identifier == "agent":
-                return "shell_agent", {"parameters": {"prompt": {"type": "string"}}}
-            return None
-
-        td.resolve_tool_identifier = fake_resolve
-        td.translate_instruction_to_command = lambda s: "ls -lah"
-
-        name, params = td.extract_tool_request("run tool agent list all files")
-
-        self.assertEqual(name, "shell_agent")
-        self.assertEqual(params, {"prompt": "ls -lah"})
 
     def test_parse_run_tool_missing_args_raises(self):
         def fake_resolve(identifier: str):

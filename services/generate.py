@@ -1,7 +1,6 @@
 from typing import Callable, Optional
-import logging
 
-logger = logging.getLogger(__name__)
+from utils.logger import logger
 
 LLM_PROVIDER = "ollama"
 GEMINI_SOURCE = "gemini"

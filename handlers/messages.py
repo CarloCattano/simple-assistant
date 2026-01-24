@@ -1,10 +1,21 @@
+import asyncio
 import os
 import re
 from typing import Optional
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import ContextTypes
-from telegramify_markdown import markdownify
+
+from utils.tool_directives import ALLOWED_SHELL_CMDS as ALLOWED_COMMANDS
+
+
+try:
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+    from telegram.ext import ContextTypes
+    from telegramify_markdown import markdownify
+except ImportError:
+    InlineKeyboardButton = InlineKeyboardMarkup = Update = object
+    ContextTypes = object
+    def markdownify(text):
+        return text
 
 from services.conversation import conversation_manager
 from services.tts import synthesize_speech
@@ -17,6 +28,7 @@ from utils.history_state import (
     remember_prompt,
     lookup_reply_context,
 )
+
 
 from utils.tool_directives import (
     REPROCESS_CONTROL_WORDS,
@@ -82,9 +94,12 @@ async def send_chunked_message(
 
     if len(text) > chunk_size:
         chunks = [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)]
-        for chunk in chunks:
-            cleaned_chunk = _strip_markdown_escape(chunk)
-            messages.append(await target.reply_text(text=cleaned_chunk, parse_mode=None))
+        for i, chunk in enumerate(chunks):
+            cleaned_chunk = chunk if parse_mode else _strip_markdown_escape(chunk)
+            messages.append(await target.reply_text(text=cleaned_chunk, parse_mode=parse_mode))
+            # Add delay between chunks to avoid flood control (except for the last chunk)
+            if i < len(chunks) - 1:
+                await asyncio.sleep(1)
     else:
         messages.append(await target.reply_text(text=text, parse_mode=parse_mode))
 
@@ -121,6 +136,7 @@ async def _send_code_block_chunked(
             messages.append(
                 await target.reply_text(text=block, parse_mode="Markdown")
             )
+            await asyncio.sleep(1)  # Delay to avoid flood control
             current = line
         else:
             current = candidate
@@ -177,41 +193,37 @@ def _build_tool_tldr_caption(summary: str, tool_name: str) -> str:
 async def maybe_send_tool_audio(update_message, context):
     if not conversation_manager.is_ollama() or not pop_last_tool_audio:
         return
-
     payload = pop_last_tool_audio()
     if not payload:
         return
-
     summary = payload.get("summary", "")
     tool_name = payload.get("tool_name", "")
     script = payload.get("script")
-
     caption = payload.get("caption") or _build_tool_tldr_caption(summary, tool_name)
-
     if not script:
         logger.warning("Missing audio script for tool payload: %s", payload)
         return
-
     context.user_data["pending_tool_audio"] = {
         "script": script,
         "caption": caption,
         "tool_name": tool_name,
         "summary": summary,
     }
-
-    keyboard = InlineKeyboardMarkup(
-        [
+    if InlineKeyboardButton is not object and InlineKeyboardMarkup is not object:
+        keyboard = InlineKeyboardMarkup(
             [
-                InlineKeyboardButton("🔊", callback_data=CALLBACK_TOOL_TLDR_AUDIO_YES),
-                InlineKeyboardButton("Skip", callback_data=CALLBACK_TOOL_TLDR_AUDIO_NO),
+                [
+                    InlineKeyboardButton("🔊", callback_data=CALLBACK_TOOL_TLDR_AUDIO_YES),
+                    InlineKeyboardButton("Skip", callback_data=CALLBACK_TOOL_TLDR_AUDIO_NO),
+                ]
             ]
-        ]
-    )
-
-    await update_message.reply_text(
-        PROMPT_AUDIO_SUMMARY_QUESTION,
-        reply_markup=keyboard,
-    )
+        )
+        await update_message.reply_text(
+            PROMPT_AUDIO_SUMMARY_QUESTION,
+            reply_markup=keyboard,
+        )
+    else:
+        await update_message.reply_text(PROMPT_AUDIO_SUMMARY_QUESTION)
 
 
 async def respond_in_mode(update_message, context, user_input, ai_output, *, tool_info=None):
@@ -220,55 +232,24 @@ async def respond_in_mode(update_message, context, user_input, ai_output, *, too
         return
 
     mode = context.user_data.get("mode", DEFAULT_MODE)
-
-    # Check for TLDR separate flag in tool_info
-    tldr_separate = bool(tool_info and tool_info.get("tldr_separate"))
+    ai_output = conversation_manager.summarize_tool_output(mode, ai_output, tool_info)
     sent_messages = []
     is_shell_agent = bool(tool_info and tool_info.get("tool_name") == "shell_agent")
 
-    # If ai_output is a tuple (raw, tldr), unpack and ensure ai_output is a string
-    tldr_text = None
-    if isinstance(ai_output, tuple) and len(ai_output) == 2:
-        ai_output, tldr_text = ai_output
-        if not isinstance(ai_output, str):
-            ai_output = str(ai_output)
-
-    # Cap shell_agent output to 4 Telegram messages (4 * 4096 chars)
-    MAX_TELEGRAM_MSG_SIZE = 4096
-    MAX_AGENT_OUTPUT_CHARS = 4 * MAX_TELEGRAM_MSG_SIZE
-    truncated = False
-    if is_shell_agent and len(ai_output) > MAX_AGENT_OUTPUT_CHARS:
-        ai_output = ai_output[:MAX_AGENT_OUTPUT_CHARS]
-        truncated = True
-
-
     if mode == DEFAULT_MODE:
         if is_shell_agent:
-            # Ensure ai_output is a string for code block chunked
-            if not isinstance(ai_output, str):
-                ai_output = str(ai_output)
+            # For shell_agent, preserve Markdown code fencing even when the
+            # message must be split: send as multiple balanced ```bash blocks.
             sent_messages = await _send_code_block_chunked(
                 update_message,
                 ai_output,
                 language="bash",
             )
-            if truncated:
-                await update_message.reply_text(
-                    "[Output truncated: command output exceeded 4 Telegram message limits. Ask for a more specific command or use filters to reduce output.]"
-                )
         else:
             reply = markdownify(ai_output)
             sent_messages = await send_chunked_message(update_message, reply)
-            # If TLDR is requested as a separate message and present, send it
-            if tldr_text:
-                tldr_msg = f"*TL;DR:*\n{tldr_text}"
-                tldr_sent = await send_chunked_message(update_message, tldr_msg, parse_mode="Markdown")
-                sent_messages.extend(tldr_sent)
 
     elif mode == MODE_AUDIO:
-        # Ensure ai_output is a string for synthesize_speech
-        if not isinstance(ai_output, str):
-            ai_output = str(ai_output)
         if len(ai_output) > MAX_AUDIO_TEXT_LENGTH:
             ai_output = ai_output[:MAX_AUDIO_TEXT_LENGTH]
             await update_message.reply_text(
@@ -288,6 +269,7 @@ async def respond_in_mode(update_message, context, user_input, ai_output, *, too
 
     remember_generated_output(context, user_input, sent_messages, tool_info)
     await maybe_send_tool_audio(update_message, context)
+
 
 def _strip_markdown_escape(text: str) -> str:
     # Remove escape characters used for Telegram MarkdownV2 when sending plain text.
@@ -324,23 +306,21 @@ async def _maybe_handle_tool_followup(
 ):
     if not (tool_metadata and run_tool_direct):
         return False
-
     try:
         followup = _derive_followup_tool_request(instructions, original_prompt, tool_metadata)
-    except ToolDirectiveError as directive_err:
+    except Exception as directive_err:
         await message.reply_text(str(directive_err), parse_mode=None)
         return True
-
     if not followup:
         return False
-
     tool_name, parameters, display_prompt = followup
-    generated_content = run_tool_direct(tool_name, parameters)
-
+    if not run_tool_direct:
+        await message.reply_text("Tool execution backend is not available.", parse_mode=None)
+        return True
+    generated_content = run_tool_direct(tool_name, parameters) if run_tool_direct else None
     if generated_content is None:
         await message.reply_text("Unknown tool request.", parse_mode=None)
         return True
-
     prompt_history = get_prompt_history(context)
     prompt_history[message.message_id] = display_prompt
     await respond_in_mode(
@@ -353,12 +333,30 @@ async def _maybe_handle_tool_followup(
     return True
 
 
+def _looks_like_shell_command(text: str) -> bool:
+    """Heuristic to detect if text looks like a shell command."""
+    text = text.strip().lower()
+    # Common shell commands
+    shell_commands = ALLOWED_COMMANDS
+    first_word = text.split()[0] if text else ""
+    if first_word in shell_commands:
+        return True
+    # Check for pipes, redirects, etc.
+    if "|" in text or ">" in text or "<" in text or "&" in text or ";" in text:
+        return True
+    return False
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, *args):
     message = update.message
+    logger.info(f"Message received from chat_id: {message.chat.id}, user: {message.from_user.id if message.from_user else 'unknown'}")
+
     if not await _ensure_admin_for_message(update, message):
         return
     if not message or not message.text:
         return
+
+    logger.info(f"Received message from chat_id: {message.chat.id}, text: {message.text[:50]}...")
 
     prompt_history = get_prompt_history(context)
 
@@ -369,9 +367,47 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, *ar
     if reply:
         original_prompt, tool_metadata = lookup_reply_context(context, reply)
 
-        if original_prompt:
+        if tool_metadata and tool_metadata.get("tool_name") == "shell_agent":
+            if _looks_like_shell_command(user_text):
+                # Treat as shell command: use context-aware follow-up
+                instructions = user_text
+                from utils.tool_directives import derive_followup_tool_request, ToolDirectiveError
+                try:
+                    followup = derive_followup_tool_request(instructions, original_prompt or "", tool_metadata)
+                except ToolDirectiveError as directive_err:
+                    await message.reply_text(str(directive_err), parse_mode=None)
+                    return
+                if followup:
+                    tool_name, parameters, display_prompt = followup
+                    generated_content = run_tool_direct(tool_name, parameters)
+                    if generated_content is None:
+                        await message.reply_text(PROMPT_UNKNOWN_TOOL, parse_mode=None)
+                        return
+                    prompt_history = get_prompt_history(context)
+                    prompt_history[message.message_id] = display_prompt
+                    await respond_in_mode(
+                        message,
+                        context,
+                        display_prompt,
+                        generated_content,
+                        tool_info={"tool_name": tool_name, "parameters": parameters},
+                    )
+                    return
+                # If followup fails, fall through to normal logic
+            else:
+                # Treat as natural-language question: summarize or answer
+                shell_output = reply.text or ""
+                llm_prompt = f"Given this shell output:\n{shell_output}\n\nAnswer this question: {user_text}"
+                try:
+                    user_id = _resolve_user_id(update, message)
+                    generated_content = await conversation_manager.generate_reply_async(user_id, llm_prompt)
+                except RuntimeError as err:
+                    await message.reply_text(str(err))
+                    return
+                await respond_in_mode(message, context, user_text, generated_content)
+                return
+        elif original_prompt:
             instructions = user_text
-
             handled = await _maybe_handle_tool_followup(
                 message,
                 context,
@@ -381,7 +417,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, *ar
             )
             if handled:
                 return
-
             user_text = _merge_instructions_with_prompt(instructions, original_prompt)
             reprocess_detail = f"reply_to_message_id={reply.message_id}"
 
@@ -391,15 +426,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, *ar
 
     remember_prompt(context, message, user_text)
 
+    if _looks_like_shell_command(user_text):
+        # Execute as shell command directly
+        tool_name = "shell_agent"
+        parameters = {"prompt": user_text}
+        generated_content = run_tool_direct(tool_name, parameters)
+        if generated_content is None:
+            await message.reply_text(PROMPT_UNKNOWN_TOOL, parse_mode=None)
+            return
+        await respond_in_mode(
+            message,
+            context,
+            user_text,
+            generated_content,
+            tool_info={"tool_name": tool_name, "parameters": parameters},
+        )
+        return
+
     if conversation_manager.is_ollama() and run_tool_direct:
         try:
             tool_request = _extract_tool_request(user_text)
-        except ToolDirectiveError as directive_err:
+        except Exception as directive_err:
             await message.reply_text(str(directive_err), parse_mode=None)
             return
 
         if tool_request:
             tool_name, parameters = tool_request
+            if not run_tool_direct:
+                await message.reply_text("Tool execution backend is not available.", parse_mode=None)
+                return
             generated_content = run_tool_direct(tool_name, parameters)
 
             if generated_content is None:
@@ -419,6 +474,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, *ar
     detail = user_text if not reprocess_detail else f"{reprocess_detail}\n{user_text}"
     log_user_action(action, update, detail)
 
+    # Only send placeholder if not handled by tool followup
     mode = context.user_data.get("mode", DEFAULT_MODE)
     placeholder = f" {mode} AI God's..."
     if reprocess_detail:
@@ -431,6 +487,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, *ar
         generated_content = await conversation_manager.generate_reply_async(user_id, user_text)
     except RuntimeError as err:
         await mess.edit_text(str(err))
+        return
+
+    # Patch: If the LLM response contains a tool call in JSON, parse and execute it
+    tool_call_match = re.match(r"~\{\s*\"name\":\s*\"(\w+)\",\s*\"parameters\":\s*(\{.*?\})\s*\}~", generated_content)
+    if tool_call_match and run_tool_direct:
+        tool_name = tool_call_match.group(1)
+        import json
+        try:
+            parameters = json.loads(tool_call_match.group(2))
+        except Exception:
+            parameters = {}
+        tool_output = run_tool_direct(tool_name, parameters)
+        await respond_in_mode(
+            message,
+            context,
+            user_text,
+            tool_output,
+            tool_info={"tool_name": tool_name, "parameters": parameters},
+        )
         return
 
     await respond_in_mode(message, context, user_text, generated_content)

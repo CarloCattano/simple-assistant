@@ -1,8 +1,24 @@
+
 import json
 import re
 from typing import Any, Optional, Sequence, Tuple, Dict
 
-from utils.logger import logger
+from config import DEBUG_TOOL_DIRECTIVES
+from utils.logger import debug_payload, logger
+
+_debug = lambda *args, **kwargs: debug_payload(*args, **kwargs) if DEBUG_TOOL_DIRECTIVES else None
+
+REPROCESS_CONTROL_WORDS = {"reprocess", "retry", "again", "repeat"}
+
+ALLOWED_SHELL_CMDS = (
+    "grep", "awk", "bash", "bc", "cat", "cd", "cat", "chmod", "chown", "cp", "curl", "cut", "date", 
+    "df", "df", "du", "docker", "du", "echo", "env", "find", "free", "git", "grep", "head", "hostname", 
+    "htop", "htop", "uptime","hyprctl", "ifconfig", "iostat", "ip", "journalctl", "journalctl", "tar",
+    "jq", "kill", "ls", "lsblk", "lscpu", "mkdir", "mount", "mv", "netstat", "node", "npm","npm", "ping",
+    "ping", "pip", "playerctl", "printenv", "ps", "pwd", "python", "python", "pip", "rg", "systemctl", 
+    "sensors", "sensors", "chmod", "service", "sleep", "ss", "stat", "sudo", "systemctl", "tail", "sort",
+    "tail", "tar", "tar", "test", "top", "touch", "umount", "uname", "unzip", "uptime", "vmstat", "wget", "whoami", "zip", "zip", "unzip"
+)
 
 try:  # Optional Ollama dependency
     from services.ollama import (
@@ -16,9 +32,6 @@ except ImportError:  # pragma: no cover - optional backend
     translate_instruction_to_command = None
     translate_instruction_to_query = None
     get_last_command_translation_error = None
-
-
-REPROCESS_CONTROL_WORDS = {"reprocess", "retry", "again", "repeat"}
 
 
 class ToolDirectiveError(Exception):
@@ -77,10 +90,11 @@ def _parse_tool_directive(text: str) -> Optional[Tuple[str, Dict[str, Any]]]:
 
     value: Any = remaining
     if param_name == "prompt" and translate_instruction_to_command:
-        logger.debug(f"tool_directives: translating instruction to command: {remaining!r}")
+        if DEBUG_TOOL_DIRECTIVES:
+            logger.debug(f"tool_directives: translating instruction to command: {remaining!r}")
         translated = translate_instruction_to_command(remaining)
 
-        logger.debug(f"tool_directives: raw translated command: {translated!r}")
+        _debug(f"tool_directives: raw translated command:", translated)
 
         if not translated:
             logger.warning(
@@ -110,54 +124,14 @@ def _parse_tool_directive(text: str) -> Optional[Tuple[str, Dict[str, Any]]]:
 
         normalized = cleaned.lower()
         default_normalized = remaining.lower()
-        logger.debug(
-            f"tool_directives: normalized command={normalized!r}, original={default_normalized!r}"
-        )
-        common_prefixes = (
-            "sudo",
-            "ls",
-            "pwd",
-            "cd",
-            "cat",
-            "find",
-            "grep",
-            "tail",
-            "head",
-            "touch",
-            "mkdir",
-            "rm",
-            "cp",
-            "mv",
-            "python",
-            "pip",
-            "npm",
-            "node",
-            "git",
-            "docker",
-            "curl",
-            "wget",
-            "ifconfig",
-            "top",
-            "htop",
-            "df",
-            "du",
-            "whoami",
-            "ps",
-            "kill",
-            "chmod",
-            "chown",
-            "service",
-            "systemctl",
-            "journalctl",
-            "tar",
-            "zip",
-            "ping",
-            "unzip",
-        )
+        if DEBUG_TOOL_DIRECTIVES:
+            logger.debug(
+                f"tool_directives: normalized command={normalized!r}, original={default_normalized!r}"
+            )
 
         if not normalized or (
-            normalized == default_normalized
-            and not normalized.startswith(common_prefixes)
+            normalized == default_normalized # 
+            and not normalized.startswith(ALLOWED_SHELL_CMDS)
         ):
             raise ToolDirectiveError(
                 "I couldn't infer a concrete shell command from that description. "
@@ -178,6 +152,12 @@ def extract_tool_request(text: str) -> Optional[Tuple[str, Dict[str, Any]]]:
     Returns (tool_name, parameters) or None when no tool directive is found.
     """
     if not text:
+        return None
+
+    # Only consider tool requests if they start at the beginning of the text
+    text_stripped = text.lstrip()
+    allowed_prefixes = ("/tool", "/web", "/agent", "/scrape" )
+    if not any(text_stripped.startswith(prefix) for prefix in allowed_prefixes):
         return None
 
     start = text.find("{")
@@ -227,15 +207,34 @@ def derive_followup_tool_request(
 
         instructions = (instructions or "").strip()
 
+        def try_translate_query(input_text, retries=3):
+            for attempt in range(retries):
+                if DEBUG_TOOL_DIRECTIVES:
+                    logger.debug(f"[followup:web_search] Attempt {attempt+1}: input='{input_text}'")
+                if not translate_instruction_to_query:
+                    if DEBUG_TOOL_DIRECTIVES:
+                        logger.debug("[followup:web_search] translate_instruction_to_query is None, aborting.")
+                    return None
+                translated = translate_instruction_to_query(input_text)
+                if DEBUG_TOOL_DIRECTIVES:
+                    logger.debug(f"[followup:web_search] Attempt {attempt+1}: output='{translated}'")
+                if translated:
+                    return translated
+                # Slightly modify input for retry
+                input_text = input_text + " (refine)"
+            if DEBUG_TOOL_DIRECTIVES:
+                logger.debug("[followup:web_search] All attempts failed.")
+            return None
+
         if instructions:
             query_input_parts = [instructions]
             if base_query:
                 query_input_parts.append(f"Previous query: {base_query}")
             query_input = "\n\n".join(part for part in query_input_parts if part)
-            translated = translate_instruction_to_query(query_input)
+            translated = try_translate_query(query_input)
             if not translated:
                 raise ToolDirectiveError(
-                    "Couldn't infer a web search query from that follow-up request."
+                    "Couldn't infer a web search query from that follow-up request after several attempts."
                 )
             new_query = translated
         else:
@@ -250,50 +249,37 @@ def derive_followup_tool_request(
         if not translate_instruction_to_command:
             return None
 
+        # Always treat replies to shell_agent tool as /agent calls, regardless of command prefix
         base_command = ""
-        if isinstance(parameters.get("prompt"), str):
+        # Prefer previous prompt from tool_metadata, fallback to original_prompt
+        if isinstance(parameters.get("prompt"), str) and parameters["prompt"].strip():
             base_command = parameters["prompt"].strip()
-        if not base_command and isinstance(original_prompt, str):
+            _debug(f"[followup:shell_agent] Using parameters['prompt'] for follow-up: ",base_command)
+        elif isinstance(original_prompt, str) and original_prompt.strip():
             base_command = original_prompt.strip()
+            _debug(f"[followup:shell_agent] Using original_prompt for follow-up: ",base_command)
+        else:
+            _debug(f"[followup:shell_agent] No valid prompt found for follow-up. parameters: ",parameters)
 
         instructions = (instructions or "").strip()
 
-        # If no new instructions are provided, simply re-run the previous command.
-        if not instructions and base_command:
-            return tool_name, {"prompt": base_command}, base_command
-
-        parts = []
-        if instructions:
-            parts.append(instructions)
+        # Always merge previous command and new instruction
         if base_command:
-            parts.append(f"Previous command: {base_command}")
-        command_input = "\n\n".join(parts) if parts else instructions
-
-        translated = translate_instruction_to_command(command_input)
-        if not translated:
-            reason = None
-            if get_last_command_translation_error:
-                try:
-                    reason = get_last_command_translation_error()
-                except Exception:
-                    reason = None
-
-            base_msg = (
-                "Couldn't translate your follow-up into a *safe* shell command. "
-                "This usually happens when the instruction is too ambiguous, or would require "
-                "unsupported/unsafe operations such as sudo, subshells, redirections, or unknown binaries. "
-                "Please send the exact shell command you want to run instead."
+            llm_input = (
+                f"Refine the previous shell command to match this new instruction.\n"
+                f"Previous command: {base_command}\n"
+                f"New instruction: {instructions}\n"
+                f"Respond ONLY with the new shell command."
             )
-            if reason:
-                base_msg = f"{base_msg} (Reason: {reason})"
-
-            raise ToolDirectiveError(base_msg)
-
-        cleaned = translated.strip()
-        if not cleaned:
-            raise ToolDirectiveError("Follow-up command translation returned an empty result.")
-
-        return tool_name, {"prompt": cleaned}, cleaned
+            _debug(f"[followup:shell_agent] LLM merged input: ",llm_input)
+            if translate_instruction_to_command:
+                translated = translate_instruction_to_command(llm_input)
+                _debug(f"[followup:shell_agent] LLM merged output: ",translated)
+                if translated:
+                    cleaned = translated.strip()
+                    return tool_name, {"prompt": cleaned}, cleaned
+            return None
+        return None
 
     if tool_name == "search_and_scrape":
         base_url = ""

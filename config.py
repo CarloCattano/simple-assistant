@@ -31,3 +31,8 @@ if TELEGRAM_TOKEN is None:
 
 if GEMINI_KEY is None and LLM_PROVIDER == "gemini":
     raise EnvironmentError("GEMINI_API_KEY is not set")
+
+# Debug switches
+DEBUG_HISTORY_STATE = (os.getenv("DEBUG_HISTORY_STATE") or "0").lower() in ("1", "true", "yes")
+DEBUG_TOOL_DIRECTIVES = (os.getenv("DEBUG_TOOL_DIRECTIVES") or "0").lower() in ("1", "true", "yes")
+DEBUG_OLLAMA = (os.getenv("DEBUG_OLLAMA") or "0").lower() in ("1", "true", "yes")

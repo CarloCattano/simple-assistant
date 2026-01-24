@@ -1,11 +1,10 @@
-import logging
 from typing import Dict, List
 
 import pytesseract
 
 from PIL import Image
 
-logger = logging.getLogger(__name__)
+from utils.logger import logger
 
 
 DEFAULT_Y_TOLERANCE = 12

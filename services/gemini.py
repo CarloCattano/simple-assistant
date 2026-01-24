@@ -5,7 +5,7 @@ import os
 import requests
 
 from config import GEMINI_KEY, SYSTEM_PROMPT
-from utils.logger import RED_COL, RST
+from utils.logger import RED, RST
 
 
 MODEL_NAME = "gemini-1.5-flash-latest"
@@ -23,7 +23,7 @@ def save_conversations():
     # if logs grow bigger than 40 elements, pop the odest out
     global user_conversations
     if len(user_conversations) > MAX_CONVERSATIONS:
-        print(f"{RED_COL}Trimming logs{RST} ")
+        print(f"{RED}Trimming logs{RST} ")
         keys_to_remove = list(user_conversations.keys())[: len(user_conversations) - TRIM_TO]
         for key in keys_to_remove:
             del user_conversations[key]
@@ -54,9 +54,9 @@ def load_conversations():
 def delete_conversations_file():
     if os.path.exists(CONVERSATION_FILE):
         os.remove(CONVERSATION_FILE)
-        print(f"{RED_COL}Deleted conversations file{RST}")
+        print(f"{RED}Deleted conversations file{RST}")
     else:
-        print(f"{RED_COL}Conversations file does not exist{RST}")
+        print(f"{RED}Conversations file does not exist{RST}")
 
 
 load_conversations()

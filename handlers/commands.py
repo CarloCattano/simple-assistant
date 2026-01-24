@@ -419,19 +419,21 @@ async def _run_direct_instruction_tool(
         await update.message.reply_text(backend_unavailable_message)
         return
 
-    if not context.args:
-        await update.message.reply_text(usage_message)
-        return
-
     instructions = " ".join(context.args).strip()
+    # If no instructions, but replying to a message, use reply text
+    if not instructions and update.effective_message and update.effective_message.reply_to_message:
+        reply_text = update.effective_message.reply_to_message.text or ""
+        instructions = reply_text.strip()
     if not instructions:
-        await update.message.reply_text(missing_instruction_message)
+        await update.message.reply_text(usage_message)
         return
 
     message = update.effective_message
     derived_followup = None
     display_prompt = instructions
     tool_display_info = ""
+    tool_name = None
+    parameters = None
 
     # When replying to a previous tool output, attempt to derive a follow-up
     # invocation using the stored prompt and tool metadata.
@@ -476,40 +478,68 @@ async def _run_direct_instruction_tool(
 
 
 
-    # If this is a reply to a previous shell_agent message and no follow-up could be derived,
-    # try to synthesize a new command using the LLM translator with previous context.
-    if message and message.reply_to_message and not derived_followup:
+
+    # Exclusive: if reply is to shell_agent, only run refinement logic and skip fallback
+    # Always trigger shell agent refinement for any reply to a shell_agent tool message
+    if message and message.reply_to_message:
         reply_message = message.reply_to_message
         original_prompt, tool_metadata = lookup_reply_context(context, reply_message)
-        if tool_metadata and tool_metadata.get("tool_name") == "shell_agent" and translate_instruction_to_command:
-            prev_command = ""
+        prev_command = ""
+        if tool_metadata and tool_metadata.get("tool_name") == "shell_agent":
             if isinstance(tool_metadata.get("parameters", {}).get("prompt"), str):
                 prev_command = tool_metadata["parameters"]["prompt"].strip()
-            if not prev_command and isinstance(original_prompt, str):
-                prev_command = original_prompt.strip()
+        if not prev_command and isinstance(original_prompt, str):
+            prev_command = original_prompt.strip()
+        if tool_metadata and tool_metadata.get("tool_name") == "shell_agent" and prev_command:
             instructions_stripped = instructions.strip()
-            llm_input = instructions_stripped
-            if prev_command:
-                llm_input = f"{instructions_stripped}\n\nPrevious command: {prev_command}"
-            logger.info(f"[AGENT REPLY] LLM fallback input: {llm_input!r}")
-            translated = translate_instruction_to_command(llm_input)
-            logger.info(f"[AGENT REPLY] LLM fallback output: {translated!r}")
-            if translated:
-                tool_name = "shell_agent"
-                parameters = {"prompt": translated.strip()}
-                display_prompt = translated.strip()
+            # Prepend new instruction to previous command for iterative refinement
+            merged_prompt = f"{instructions_stripped}\n\n{prev_command}" if instructions_stripped else prev_command
+            llm_input = (
+                f"Refine the previous shell command to match this new instruction. "
+                f"Previous command: {prev_command}\n"
+                f"New instruction: {instructions_stripped}\n"
+                f"Respond ONLY with the new shell command."
+            )
+            logger.info(f"[AGENT REPLY] LLM merged input: {llm_input!r}")
+            if translate_instruction_to_command:
+                translated = translate_instruction_to_command(llm_input)
+                logger.info(f"[AGENT REPLY] LLM merged output: {translated!r}")
+                if translated:
+                    tool_name = "shell_agent"
+                    parameters = {"prompt": translated.strip()}
+                    display_prompt = merged_prompt
+                else:
+                    await update.message.reply_text(
+                        "Sorry, I couldn't translate your follow-up into a valid shell command. Please rephrase."
+                    )
+                    return
             else:
                 await update.message.reply_text(
-                    "Sorry, I couldn't translate your follow-up into a valid shell command. Please rephrase."
+                    "Shell command translation backend is not available. Please check your configuration."
                 )
                 return
-        else:
-            logger.info(f"[AGENT REPLY] No valid previous shell_agent context or LLM unavailable. instructions={instructions!r} tool_metadata={tool_metadata!r}")
-            await update.message.reply_text(
-                "Sorry, I couldn't understand your follow-up. Please rephrase or be more specific."
+            # Skip fallback logic entirely
+            message = update.effective_message
+            remember_prompt(context, message, display_prompt)
+            if not tool_name:
+                await update.message.reply_text(unavailable_message)
+                return
+            if not parameters:
+                parameters = {}
+            result = run_tool_direct(tool_name, parameters)
+            if result is None:
+                await update.message.reply_text(unavailable_message)
+                return
+            await respond_in_mode(
+                update.message,
+                context,
+                display_prompt,
+                result,
+                tool_info={"tool_name": tool_name, "parameters": parameters},
             )
             return
 
+    # Fallback: normal tool invocation if not a shell_agent reply
     if not derived_followup:
         try:
             tool_name, parameters = _resolve_tool_invocation(tool_identifier, instructions)
@@ -539,6 +569,12 @@ async def _run_direct_instruction_tool(
     message = update.effective_message
     remember_prompt(context, message, display_prompt)
 
+    # Ensure tool_name and parameters are set
+    if not tool_name:
+        await update.message.reply_text(unavailable_message)
+        return
+    if not parameters:
+        parameters = {}
     result = run_tool_direct(tool_name, parameters)
     if result is None:
         await update.message.reply_text(unavailable_message)
@@ -643,6 +679,7 @@ def _resolve_tool_invocation(tool_identifier: str, args_text: str):
     if not args_text:
         raise ToolDirectiveError("Provide the arguments needed for this tool call.")
 
+
     value = args_text
     if param_name == "prompt" and translate_instruction_to_command:
         translated = translate_instruction_to_command(args_text)
@@ -657,11 +694,13 @@ def _resolve_tool_invocation(tool_identifier: str, args_text: str):
 
         normalized = cleaned.lower()
         default_normalized = args_text.lower()
-        common_prefixes = (
-            "cat","cd","chmod","chown","cp","curl","df","docker","du","find","git",
-            "grep","head","htop","journalctl","kill","ls","mkdir","mv","node","npm",
-            "ping","pip","ps","pwd","python","rm","service","sudo","systemctl","tail","tar",             "top",             "touch",             "unzip",             "wget",             "whoami",             "zip",
-        )
+        # Reuse common_prefixes from tool_directives
+        try:
+            from utils.tool_directives import ALLOWED_SHELL_CMDS as common_prefixes
+        except ImportError:
+            raise ToolDirectiveError(
+                "Internal error: couldn't load allowed shell command prefixes."
+            )
 
         if not normalized or (
             normalized == default_normalized

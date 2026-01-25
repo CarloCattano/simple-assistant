@@ -20,7 +20,6 @@ from services.gemini import clear_conversations, handle_user_message
 from utils.auth import ADMIN_DENY_MESSAGE, is_admin
 from utils.history_state import (
     lookup_reply_context,
-    remember_prompt,
 )
 from utils.tool_directives import (
     ToolDirectiveError,
@@ -29,24 +28,14 @@ from utils.tool_directives import (
     derive_followup_tool_request as _derive_followup_tool_request,
 )
 
-try:
-    from services.ollama import (
-        clear_history,
-        get_recent_events,
-        get_recent_history,
-        resolve_tool_identifier,
-        run_tool_direct,
-        translate_instruction_to_command,
-        translate_instruction_to_query,
-    )
-except ImportError:  # Optional dependency
-    clear_history = None
-    get_recent_events = None
-    get_recent_history = None
-    resolve_tool_identifier = None
-    run_tool_direct = None
-    translate_instruction_to_command = None
-    translate_instruction_to_query = None
+
+from services.ollama import (
+    resolve_tool_identifier,
+    run_tool_direct,
+    translate_instruction_to_command,
+    translate_instruction_to_query,
+)
+from services.history_manager import history_manager
 
 from services.tts import synthesize_speech
 from utils.logger import log_user_action
@@ -412,7 +401,7 @@ async def tool_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if isinstance(first_value, str) and first_value.strip():
                 display_prompt = first_value.strip()
 
-    remember_prompt(context, message, display_prompt)
+    # Prompt recording is now handled by history_manager
 
     # Ensure tool_name and parameters are set before proceeding
     if not tool_name or parameters is None:
@@ -464,6 +453,7 @@ async def agent_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def web_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     """Shortcut for running web_search via /web <instruction>.
 
     Behaves like `/tool web_search <instruction>`: the natural-language
@@ -471,23 +461,15 @@ async def web_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     and executed via the existing web_search tool.
     """
 
-    from handlers.messages import send_markdown_message
-    from services.ollama import run_tool_direct_async
-    from utils.tldr import extract_tldr_from_tool_result, send_tldr
-
-    instructions = " ".join(context.args).strip()
-    if not instructions:
-        await update.message.reply_text("Usage: /web <instruction>")
-        return
-
-    parameters = {"query": instructions}
-    result = await run_tool_direct_async("web_search", parameters, tldr_separate=True)
-    tldr = extract_tldr_from_tool_result(result)
-    main_result = result[0] if isinstance(result, tuple) else result
-
-    await update.message.reply_text(main_result, parse_mode=None)
-    if tldr:
-        await send_tldr(update.message, tldr, tool_name="Web Search")
+    await _run_direct_instruction_tool(
+        update,
+        context,
+        tool_identifier="web_search",
+        usage_message="Usage: /web <instruction>",
+        admin_only_message="Web search is available to admins only.",
+        backend_unavailable_message="Web search is only available when the Ollama backend is active.",
+        unavailable_message="Web search tool is unavailable.",
+    )
 
 
 async def cheat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -518,13 +500,16 @@ async def cheat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Use the tool registry entry (if available) or call run_tool_direct
     try:
+        from utils.cheat_parser import clean_cheat_output
         if run_tool_direct:
             result = run_tool_direct("cheat", {"command": cmd})
         else:
             # Fallback: attempt to import tools.cheat directly
             from tools.cheat import fetch_cheat
-
             result = fetch_cheat(cmd)
+        # Always clean the output before formatting for Telegram
+        if result:
+            result = clean_cheat_output(result)
     except Exception as e:
         await update.message.reply_text(f"Error fetching cheat.sh: {e}")
         return
@@ -537,11 +522,19 @@ import asyncio
 
 
 async def _run_tool_async(tool_name, parameters):
-    # Use native async for web_search, otherwise offload to thread
-    if tool_name == "web_search":
-        from tools.web_search import web_search_async
-
-        return await web_search_async(parameters.get("query", ""))
+    # Use TLDR-generating infrastructure for web_search and shell_agent
+    if tool_name in ("web_search", "shell_agent"):
+        from services.ollama_tools import call_tool_with_tldr, available_functions
+        tool_entry = available_functions.get(tool_name)
+        if not tool_entry or not tool_entry.get("function"):
+            return None
+        tool_func = tool_entry["function"]
+        # call_tool_with_tldr is blocking, so run in thread
+        # For web_search, tldr_separate=True to ensure TLDR is always generated
+        tldr_separate = tool_name == "web_search"
+        return await asyncio.to_thread(
+            call_tool_with_tldr, tool_name, tool_func, [], tldr_separate, **parameters
+        )
     return await asyncio.to_thread(run_tool_direct, tool_name, parameters)
 
 
@@ -557,7 +550,7 @@ async def _run_direct_instruction_tool(
 ) -> None:
     """Resolve and execute a single-instruction tool and respond in mode.
 
-    Shared helper for /agent and /web so that natural-language instructions
+    Shared helper for /agent and /web /scrape /cheat so that natural-language instructions
     are translated and routed through run_tool_direct with consistent
     prompt_history and respond_in_mode handling.
     """
@@ -682,7 +675,7 @@ async def _run_direct_instruction_tool(
                 return
             # Skip fallback logic entirely
             message = update.effective_message
-            remember_prompt(context, message, display_prompt)
+            # Prompt recording is now handled by history_manager
             if not tool_name:
                 await update.message.reply_text(unavailable_message)
                 return
@@ -692,6 +685,11 @@ async def _run_direct_instruction_tool(
             if result is None:
                 await update.message.reply_text(unavailable_message)
                 return
+            # Record tool usage in history
+            user_id = str(update.effective_user.id) if update.effective_user else None
+            if user_id:
+                from services.history_manager import history_manager
+                history_manager.record_tool(user_id, tool_name, parameters)
             await respond_in_mode(
                 update.message,
                 context,
@@ -748,7 +746,7 @@ async def _run_direct_instruction_tool(
                 tool_request_message = None
 
     message = update.effective_message
-    remember_prompt(context, message, display_prompt)
+    # Prompt recording is now handled by history_manager
 
     # Ensure tool_name and parameters are set
     if not tool_name:
@@ -756,18 +754,34 @@ async def _run_direct_instruction_tool(
         return
     if not parameters:
         parameters = {}
+
     result = await _run_tool_async(tool_name, parameters)
     if result is None:
         await update.message.reply_text(unavailable_message)
         return
 
+    # Record tool usage in history
+    user_id = str(update.effective_user.id) if update.effective_user else None
+    if user_id:
+        from services.history_manager import history_manager
+        history_manager.record_tool(user_id, tool_name, parameters)
+
+    # Respond with main result
+    from utils.tldr import extract_tldr_from_tool_result, send_tldr
+    tldr = extract_tldr_from_tool_result(result)
+    main_result = result[0] if isinstance(result, tuple) else result
+
     await respond_in_mode(
         update.message,
         context,
         display_prompt,
-        result,
+        main_result,
         tool_info={"tool_name": tool_name, "parameters": parameters},
     )
+    # Send TLDR if present
+    if tldr:
+        await send_tldr(update.message, tldr, tool_name=tool_name)
+
     # Delete the tool request message once the response is sent, if it exists
     if tool_request_message:
         try:
@@ -776,41 +790,23 @@ async def _run_direct_instruction_tool(
             logger.debug(f"Failed to delete tool request message: {e}")
 
 
+
 async def clear_user_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _ensure_admin(update, update.message, context):
         return
-
-    logger.warn(f"Clearing history for {update.effective_user}")
-
-    if LLM_PROVIDER == "ollama" and clear_history:
-        clear_history()
-    elif LLM_PROVIDER == "gemini":
-        if update.effective_user is not None:
-            clear_conversations(update.effective_user.id)
-    else:
-        await update.message.reply_text(
-            "History clearing is only supported for Ollama or Gemini backends."
-        )
+    user_id = str(update.effective_user.id) if update.effective_user else None
+    if not user_id:
+        await update.message.reply_text("Could not determine user ID.")
+        return
+    logger.warning(f"[history_manager] Clearing history for user {user_id}")
+    history_manager.clear_history(user_id)
+    await update.message.reply_text("Your conversation history has been cleared.")
 
 
-# --- DB history integration ---
-try:
-    from db.history import save_message, get_history
-except ImportError:
-    save_message = None
-    get_history = None
 
-# Patch: Save every message to DB (user and assistant)
-# You should call this in your message/command handlers, e.g. after receiving or sending a message.
-# Example for user message:
-# save_message(chat_id, user_id, 'user', user_message)
-# Example for assistant reply:
-# save_message(chat_id, user_id, 'assistant', bot_reply)
-
-# Patch: Use DB for /history if available
+# --- In-memory history_manager integration ---
 async def show_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id if update.effective_user else None
+    user_id = str(update.effective_user.id) if update.effective_user else None
     if not _ensure_admin(
         update,
         update.message,
@@ -818,22 +814,10 @@ async def show_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         custom_message="History is available to the admin only.",
     ):
         return
-
-    if get_history:
-        entries = get_history(chat_id, limit=20)
-        if not entries:
-            await update.message.reply_text("No conversation history recorded yet.")
-            return
-        formatted = "\n".join(f"[{role}] {content}" for role, content, ts in reversed(entries))
-        await send_chunked_message(update.message, formatted, parse_mode=None)
+    if not user_id:
+        await update.message.reply_text("Could not determine user ID.")
         return
-    # fallback to old logic if DB not available
-    if LLM_PROVIDER != "ollama" or not get_recent_history:
-        await update.message.reply_text(
-            "History inspection only works when Ollama is active."
-        )
-        return
-    entries = get_recent_history(limit=20)
+    entries = history_manager.get_history(user_id, limit=HISTORY_LIMIT)
     if not entries:
         await update.message.reply_text("No conversation history recorded yet.")
         return
@@ -841,7 +825,9 @@ async def show_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_chunked_message(update.message, formatted, parse_mode=None)
 
 
+
 async def show_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id) if update.effective_user else None
     if not _ensure_admin(
         update,
         update.message,
@@ -849,21 +835,11 @@ async def show_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         custom_message="Flow monitoring is available to the admin only.",
     ):
         return
-
-    if LLM_PROVIDER != "ollama" or not get_recent_events:
-        await update.message.reply_text(
-            "Flow monitoring only works when Ollama is active."
-        )
-        return
-
-    events = get_recent_events(limit=EVENT_LIMIT)
+    events = history_manager.get_events(limit=EVENT_LIMIT)
     if not events:
         await update.message.reply_text("No runtime events captured yet.")
         return
-
     formatted = "\n".join(_format_event_entry(event) for event in events)
-    # Event payloads often contain characters like ']' that conflict with
-    # Telegram's MarkdownV2 parsing. Send as plain text.
     await send_chunked_message(update.message, formatted, parse_mode=None)
 
 

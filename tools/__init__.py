@@ -12,8 +12,9 @@ def load_tools():
 
         # Check if tool is a dictionary
         if isinstance(mod.tool, dict) and "function" in mod.tool:
-            func_name = mod.tool['function'].__name__
-            tool_registry[func_name] = mod.tool
+            # Use the 'name' field as the registry key if present
+            tool_name = mod.tool.get('name') or mod.tool['function'].__name__
+            tool_registry[tool_name] = mod.tool
         elif callable(mod.tool):
             # If the tool is just a function, wrap it in a dict
             func_name = mod.tool.__name__

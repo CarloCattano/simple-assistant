@@ -154,7 +154,11 @@ def call_tool_with_tldr(
             stderr = (last_output.get("stderr") or "").strip()
             stdout = (last_output.get("stdout") or "").strip()
 
+
+            # Treat exit_code 1 as a retryable error (e.g., 'exit 1' from LLM)
             has_error = exit_code not in (0, None)
+            if exit_code == 1:
+                has_error = True
 
             lower_err = stderr.lower()
             if not has_error and stderr:
@@ -200,7 +204,13 @@ def call_tool_with_tldr(
             )
 
             new_command = translate_instruction_to_command(context_instruction)
-            if not new_command:
+            if new_command:
+                logger.info(
+                    f"shell_agent retry {attempt}/{max_attempts}: refining command from {working_arguments.get('prompt')!r} to {new_command!r}"
+                )
+                working_arguments["prompt"] = new_command
+                continue
+            else:
                 logger.info(
                     f"shell_agent retry {attempt}/{max_attempts}: no new command generated, aborting retry"
                 )
@@ -241,11 +251,6 @@ def call_tool_with_tldr(
                 except Exception:
                     pass
                 break
-
-            logger.info(
-                f"shell_agent retry {attempt}/{max_attempts}: refining command from {working_arguments.get('prompt')!r} to {new_command!r}"
-            )
-            working_arguments["prompt"] = new_command
 
         # After all retries, check if the final command matches the user's intent using LLM
         final_command = None

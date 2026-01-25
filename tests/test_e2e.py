@@ -93,6 +93,7 @@ class E2ETests(unittest.TestCase):
         response.raise_for_status()
         result = response.json()
         self.assertEqual(result["ok"], True)
+
         print(f"Sent photo to chat {TEST_CHAT_ID}")
 
 

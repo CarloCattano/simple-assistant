@@ -117,6 +117,16 @@ def main():
     app.run_polling(allowed_updates=ALLOWED_UPDATES)
 
 
+
+import utils.logger  # Ensure logger is initialized
+import sys
+
+def log_uncaught_exceptions(exctype, value, tb):
+    import traceback
+    utils.logger.logger.error("Uncaught exception:", exc_info=(exctype, value, tb))
+
+sys.excepthook = log_uncaught_exceptions
+
 if __name__ == "__main__":
     print("Bot is starting...")
     main()

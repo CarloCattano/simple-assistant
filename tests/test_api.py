@@ -77,7 +77,7 @@ class GeminiTTSTests(unittest.TestCase):
         if not parts:
             self.skipTest("Gemini TTS response contained no parts; skipping.")
 
-        audio = parts[0].get("inline_data")
+        audio = parts[0].get("inlineData")
         if not audio:
             self.skipTest("Expected inline audio data in Gemini response, but none was present.")
 

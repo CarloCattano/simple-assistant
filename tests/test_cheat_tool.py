@@ -6,7 +6,7 @@ from tools import load_tools
 class CheatToolTests(unittest.TestCase):
     def test_fetch_cheat_real(self):
         tools = load_tools()
-        func_entry = tools.get("fetch_cheat")
+        func_entry = tools.get("cheat")
         self.assertIsNotNone(func_entry)
         result = func_entry["function"]("ls")
         # If network or cheat.sh is unavailable, skip rather than fail CI.

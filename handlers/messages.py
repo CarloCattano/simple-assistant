@@ -24,11 +24,9 @@ from services.tts import synthesize_speech
 from utils.auth import ADMIN_DENY_MESSAGE, is_admin
 from utils.history_state import (
     get_output_metadata,
-    get_prompt_history,
     lookup_reply_context,
-    remember_generated_output,
-    remember_prompt,
 )
+from services.history_manager import history_manager
 from utils.logger import log_user_action, logger
 from utils.tool_directives import (
     REPROCESS_CONTROL_WORDS,
@@ -230,23 +228,34 @@ def _build_tool_tldr_caption(summary: str, tool_name: str) -> str:
 
 async def maybe_send_tool_audio(update_message, context):
     if not conversation_manager.is_ollama() or not pop_last_tool_audio:
+        logger.debug("maybe_send_tool_audio: Ollama not active or pop_last_tool_audio missing.")
         return
-    payload = pop_last_tool_audio()
-    if not payload:
-        return
-    summary = payload.get("summary", "")
-    tool_name = payload.get("tool_name", "")
-    script = payload.get("script")
-    caption = payload.get("caption") or _build_tool_tldr_caption(summary, tool_name)
-    if not script:
-        logger.warning("Missing audio script for tool payload: %s", payload)
-        return
-    context.user_data["pending_tool_audio"] = {
-        "script": script,
-        "caption": caption,
-        "tool_name": tool_name,
-        "summary": summary,
-    }
+    # Only set pending_tool_audio if not already set
+    if "pending_tool_audio" not in context.user_data:
+        logger.debug("maybe_send_tool_audio: Attempting to peek last tool audio.")
+        payload = pop_last_tool_audio(peek=True) if hasattr(pop_last_tool_audio, '__call__') else None
+        if not payload:
+            logger.debug("maybe_send_tool_audio: No audio TLDR payload found.")
+            return
+        summary = payload.get("summary", "")
+        tool_name = payload.get("tool_name", "")
+        # Do not show TLDR audio button for agent (shell_agent)
+        if tool_name == "shell_agent":
+            logger.info("maybe_send_tool_audio: Skipping TLDR audio button for shell_agent.")
+            return
+        logger.info(f"maybe_send_tool_audio: Audio TLDR payload found: {payload}")
+        script = payload.get("script")
+        caption = payload.get("caption") or _build_tool_tldr_caption(summary, tool_name)
+        if not script:
+            logger.warning(f"maybe_send_tool_audio: Missing audio script for tool payload: {payload}")
+            return
+        context.user_data["pending_tool_audio"] = {
+            "script": script,
+            "caption": caption,
+            "tool_name": tool_name,
+            "summary": summary,
+        }
+        logger.info(f"maybe_send_tool_audio: Queued pending_tool_audio in user_data: {context.user_data['pending_tool_audio']}")
     if InlineKeyboardButton is not object and InlineKeyboardMarkup is not object:
         keyboard = InlineKeyboardMarkup(
             [
@@ -260,11 +269,13 @@ async def maybe_send_tool_audio(update_message, context):
                 ]
             ]
         )
+        logger.info("maybe_send_tool_audio: Displaying audio TLDR button to user.")
         await update_message.reply_text(
             PROMPT_AUDIO_SUMMARY_QUESTION,
             reply_markup=keyboard,
         )
     else:
+        logger.info("maybe_send_tool_audio: Displaying audio TLDR prompt without button.")
         await update_message.reply_text(PROMPT_AUDIO_SUMMARY_QUESTION)
 
 
@@ -278,6 +289,13 @@ async def respond_in_mode(
     mode = context.user_data.get("mode", DEFAULT_MODE)
     # Skip TLDR summary and audio for cheat tool actions
     is_cheat_tool = bool(tool_info and tool_info.get("tool_name") == "cheat")
+    # Record tool usage in history if tool_info is present and not a cheat tool
+    user_id = None
+    if hasattr(update_message, "from_user") and update_message.from_user:
+        user_id = str(update_message.from_user.id)
+    if tool_info and user_id and not is_cheat_tool:
+        from services.history_manager import history_manager
+        history_manager.record_tool(user_id, tool_info.get("tool_name"), tool_info.get("parameters", {}))
     ai_output = (
         ai_output
         if is_cheat_tool
@@ -295,13 +313,19 @@ async def respond_in_mode(
             )
         elif is_cheat_tool:
             # Use the unified cheat.sh output formatter
+            if not ai_output:
+                ai_output = "No cheat.sh output available."
+            logger.info(f"[CHEAT DEBUG] About to format cheat.sh output, length={len(ai_output)}")
             messages_to_send = format_cheat_output_for_telegram(
                 ai_output, escape_markdown_v2
             )
+            logger.info(f"[CHEAT DEBUG] Number of formatted cheat.sh message chunks: {len(messages_to_send)}")
             sent_messages = []
-            for msg in messages_to_send:
+            for i, msg in enumerate(messages_to_send):
+                logger.info(f"[CHEAT DEBUG] Sending chunk {i+1}/{len(messages_to_send)}, length={len(msg)}")
                 sent_msg = await _safe_reply_text(update_message, msg, "MarkdownV2")
                 sent_messages.append(sent_msg)
+            logger.info(f"[CHEAT DEBUG] Finished sending all cheat.sh chunks.")
         else:
             # Convert Markdown to MarkdownV2 for proper rendering
             ai_output = markdownify(ai_output)
@@ -337,7 +361,7 @@ async def respond_in_mode(
             else:
                 await update_message.reply_text("Content generation failed.")
 
-    remember_generated_output(context, user_input, sent_messages, tool_info)
+    # Output recording is now handled by history_manager
     if not is_cheat_tool:
         await maybe_send_tool_audio(update_message, context)
 
@@ -608,14 +632,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, *ar
             user_text = _merge_instructions_with_prompt(instructions, original_prompt)
             reprocess_detail = f"reply_to_message_id={reply.message_id}"
 
-    prompt_history = get_prompt_history(context)
-    llm_prompt = user_text
 
+    user_id = str(message.from_user.id) if message and message.from_user else None
     if not user_text:
         await message.reply_text(PROMPT_INVALID_TEXT)
         return
+    if user_id:
+        history_manager.record_prompt(user_id, user_text)
 
-    remember_prompt(context, message, user_text)
 
     if _looks_like_shell_command(user_text):
         await _handle_shell_command(message, context, user_text)
@@ -693,7 +717,10 @@ async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TY
     if not await _ensure_admin_for_message(update, edited):
         return
 
-    remember_prompt(context, edited, edited.text.strip())
+
+    user_id = str(edited.from_user.id) if edited and edited.from_user else None
+    if user_id:
+        history_manager.record_prompt(user_id, edited.text.strip())
 
     log_user_action("edited_text", update, edited.text)
 

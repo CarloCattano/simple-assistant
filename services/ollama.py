@@ -1,14 +1,14 @@
-import asyncio
+import threading
 import logging
 import json
 import os
 import re
-import threading
+# Global mapping of user_id -> last_tool_audio payload
+_audio_tldr_payloads: Dict[str, Dict[str, str]] = {}
 import uuid
 from collections import deque
 from datetime import UTC, datetime
 from typing import Any, Dict, List, Optional
-import asyncio
 
 from ollama import chat as _ollama_chat
 
@@ -21,7 +21,6 @@ from config import (
 from services.ollama_shared import (
     COMMAND_TRANSLATOR_SYSTEM_PROMPT,
     MAX_HISTORY_LENGTH,
-    MAX_TOOL_OUTPUT_IN_HISTORY,
     MODEL_NAME,
     QUERY_TRANSLATOR_SYSTEM_PROMPT,
 )
@@ -93,16 +92,6 @@ def _redact_system_content_in_messages(
         else:
             sanitized.append(m)
     return sanitized
-
-
-def _sanitize_payload(payload: Any) -> Any:
-    """Sanitize common payload structures (e.g., dicts with a 'messages' key) to avoid logging system prompts."""
-    if isinstance(payload, dict):
-        p = dict(payload)
-        if "messages" in p and isinstance(p["messages"], list):
-            p["messages"] = _redact_system_content_in_messages(p["messages"])
-    return payload
-
 
 
 def generate_content(prompt: str) -> str | tuple[str, str | None]:
@@ -230,13 +219,7 @@ def escape_entities(text: str) -> str:
         text = text.replace(entity, f" {entity}")
     return text
 
-
-
-
-
-
-
-
+# TODO: Why are there unused parameters here?
 def call_tool_with_tldr(
     tool_name: str,
     tool_callable,
@@ -327,9 +310,10 @@ def _format_tool_output(tool_name: str, raw_output: Any) -> str:
 
 
 def _get_or_create_user_id() -> str:
-    if not hasattr(_thread_local, "user_id"):
-        _thread_local.user_id = str(uuid.uuid4())
-    return _thread_local.user_id
+    # For now, fallback to a global singleton for single-user bot, or extend to multi-user as needed
+    if not hasattr(_get_or_create_user_id, "_user_id"):
+        _get_or_create_user_id._user_id = str(uuid.uuid4())
+    return _get_or_create_user_id._user_id
 
 
 def _ensure_system_prompt(history: List[Dict[str, str]]) -> None:
@@ -355,20 +339,6 @@ def _trim_history(history: List[Dict[str, str]]) -> None:
     system = history[0:1]
     recent = history[-(MAX_HISTORY_LENGTH - 1) :]
     history[:] = system + recent
-
-
-
-
-
-
-# Import the async-compatible wrapper from the shim, so existing imports work
-from services.ollama_async_shim import run_tool_direct_async
-
-
-
-
-
-
 
 
 def _set_last_command_translation_error(reason: Optional[str]) -> None:
@@ -583,27 +553,20 @@ def _truncate_event_text(text: str) -> str:
         return text
     return text[: MAX_EVENT_TEXT - 3] + "..."
 
-
-def _stringify_data(data: Any) -> str:
-    try:
-        return json.dumps(data, sort_keys=True)
-    except (TypeError, ValueError):
-        return str(data)
-
-
 def clear_history():
     user_id = _get_or_create_user_id()
     user_histories.pop(user_id, None)
-    if hasattr(_thread_local, "last_tool_audio"):
-        delattr(_thread_local, "last_tool_audio")
+    if user_id in _audio_tldr_payloads:
+        del _audio_tldr_payloads[user_id]
 
-
-def _set_last_tool_audio(payload: Dict[str, str]) -> None:
-    _thread_local.last_tool_audio = payload
-
-
-def pop_last_tool_audio() -> Optional[Dict[str, str]]:
-    payload = getattr(_thread_local, "last_tool_audio", None)
-    if hasattr(_thread_local, "last_tool_audio"):
-        delattr(_thread_local, "last_tool_audio")
+def pop_last_tool_audio(peek: bool = False) -> Optional[Dict[str, str]]:
+    user_id = _get_or_create_user_id()
+    payload = _audio_tldr_payloads.get(user_id)
+    if not peek and user_id in _audio_tldr_payloads:
+        del _audio_tldr_payloads[user_id]
     return payload
+
+def _set_last_tool_audio(payload: Dict[str, str], user_id: Optional[str] = None) -> None:
+    if user_id is None:
+        user_id = _get_or_create_user_id()
+    _audio_tldr_payloads[user_id] = payload

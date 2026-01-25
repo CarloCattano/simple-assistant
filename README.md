@@ -35,9 +35,11 @@ This assistant supports context-aware interactions and reply-based tool flows:
     poetry install
     poetry run python app.py
     ```
-4. run tests:
+4. All runtime errors and uncaught exceptions are logged to `usage.log` (in addition to tool usage, prompts, and events). This allows an agent to tail `usage.log` and extract error context from the Python interpreter.
+
+5. run tests:
     ```bash
-     poetry run python run_tests.py
+    poetry run python run_tests.py
     ```
 
 ### Shell Agent Tool

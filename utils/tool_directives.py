@@ -4,9 +4,12 @@ import re
 from typing import Any, Optional, Sequence, Tuple, Dict
 
 from config import DEBUG_TOOL_DIRECTIVES
-from utils.logger import debug_payload, logger
+from utils.logger import logger, debug_payload
 
-_debug = lambda *args, **kwargs: debug_payload(*args, **kwargs) if DEBUG_TOOL_DIRECTIVES else None
+
+def debug(*args, **kwargs):
+    if logger.isEnabledFor(logging.DEBUG):
+        debug_payload(*args, **kwargs)
 
 REPROCESS_CONTROL_WORDS = {"reprocess", "retry", "again", "repeat"}
 
@@ -88,11 +91,11 @@ def _parse_tool_directive(text: str) -> Optional[Tuple[str, Dict[str, Any]]]:
 
     value: Any = remaining
     if param_name == "prompt" and translate_instruction_to_command:
-        if DEBUG_TOOL_DIRECTIVES:
+        if logger.isEnabledFor(logging.DEBUG):
             logger.debug(f"tool_directives: translating instruction to command: {remaining!r}")
         translated = translate_instruction_to_command(remaining)
 
-        _debug(f"tool_directives: raw translated command:", translated)
+        debug(f"tool_directives: raw translated command:", translated)
 
         if not translated:
             logger.warning(
@@ -122,7 +125,7 @@ def _parse_tool_directive(text: str) -> Optional[Tuple[str, Dict[str, Any]]]:
 
         normalized = cleaned.lower()
         default_normalized = remaining.lower()
-        if DEBUG_TOOL_DIRECTIVES:
+        if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
                 f"tool_directives: normalized command={normalized!r}, original={default_normalized!r}"
             )
@@ -207,20 +210,20 @@ def derive_followup_tool_request(
 
         def try_translate_query(input_text, retries=3):
             for attempt in range(retries):
-                if DEBUG_TOOL_DIRECTIVES:
+                if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(f"[followup:web_search] Attempt {attempt+1}: input='{input_text}'")
                 if not translate_instruction_to_query:
-                    if DEBUG_TOOL_DIRECTIVES:
+                    if logger.isEnabledFor(logging.DEBUG):
                         logger.debug("[followup:web_search] translate_instruction_to_query is None, aborting.")
                     return None
                 translated = translate_instruction_to_query(input_text)
-                if DEBUG_TOOL_DIRECTIVES:
+                if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(f"[followup:web_search] Attempt {attempt+1}: output='{translated}'")
                 if translated:
                     return translated
                 # Slightly modify input for retry
                 input_text = input_text + " (refine)"
-            if DEBUG_TOOL_DIRECTIVES:
+            if logger.isEnabledFor(logging.DEBUG):
                 logger.debug("[followup:web_search] All attempts failed.")
             return None
 
@@ -252,12 +255,12 @@ def derive_followup_tool_request(
         # Prefer previous prompt from tool_metadata, fallback to original_prompt
         if isinstance(parameters.get("prompt"), str) and parameters["prompt"].strip():
             base_command = parameters["prompt"].strip()
-            _debug(f"[followup:shell_agent] Using parameters['prompt'] for follow-up: ",base_command)
+            debug(f"[followup:shell_agent] Using parameters['prompt'] for follow-up: ",base_command)
         elif isinstance(original_prompt, str) and original_prompt.strip():
             base_command = original_prompt.strip()
-            _debug(f"[followup:shell_agent] Using original_prompt for follow-up: ",base_command)
+            debug(f"[followup:shell_agent] Using original_prompt for follow-up: ",base_command)
         else:
-            _debug(f"[followup:shell_agent] No valid prompt found for follow-up. parameters: ",parameters)
+            debug(f"[followup:shell_agent] No valid prompt found for follow-up. parameters: ",parameters)
 
         instructions = (instructions or "").strip()
 
@@ -269,10 +272,10 @@ def derive_followup_tool_request(
                 f"New instruction: {instructions}\n"
                 f"Respond ONLY with the new shell command."
             )
-            _debug(f"[followup:shell_agent] LLM merged input: ",llm_input)
+            debug(f"[followup:shell_agent] LLM merged input: ",llm_input)
             if translate_instruction_to_command:
                 translated = translate_instruction_to_command(llm_input)
-                _debug(f"[followup:shell_agent] LLM merged output: ",translated)
+                debug(f"[followup:shell_agent] LLM merged output: ",translated)
                 if translated:
                     cleaned = translated.strip()
                     return tool_name, {"prompt": cleaned}, cleaned

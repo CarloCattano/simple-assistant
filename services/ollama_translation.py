@@ -1,5 +1,6 @@
 import re
 from typing import Optional
+import logging
 
 from ollama import chat
 
@@ -14,7 +15,7 @@ from utils.command_guard import (
     get_last_sanitize_error,
     sanitize_command,
 )
-from utils.logger import debug_payload, logger
+from utils.logger import logger, debug_payload
 
 # COMMAND_TRANSLATOR_SYSTEM_PROMPT, QUERY_TRANSLATOR_SYSTEM_PROMPT and MODEL_NAME
 # are imported from services.ollama_shared
@@ -22,11 +23,9 @@ from utils.logger import debug_payload, logger
 _last_command_translation_error: Optional[str] = None
 
 
-_debug = (
-    lambda *args, **kwargs: debug_payload(*args, **kwargs)
-    if DEBUG_OLLAMA or DEBUG_TOOL_DIRECTIVES
-    else None
-)
+def debug(*args, **kwargs):
+    if logger.isEnabledFor(logging.DEBUG):
+        debug_payload(*args, **kwargs)
 
 
 def _set_last_command_translation_error(reason: Optional[str]) -> None:
@@ -65,11 +64,11 @@ def translate_instruction_to_command(instruction: str) -> Optional[str]:
         return None
 
     _set_last_command_translation_error(None)
-    _debug("command_translation_input", {"instruction": instruction})
+    debug("command_translation_input", {"instruction": instruction})
 
     direct = detect_direct_command(instruction)
     if direct:
-        _debug("command_translation_direct", direct)
+        debug("command_translation_direct", direct)
         _set_last_command_translation_error(None)
         return direct
 
@@ -77,12 +76,12 @@ def translate_instruction_to_command(instruction: str) -> Optional[str]:
         {"role": "system", "content": COMMAND_TRANSLATOR_SYSTEM_PROMPT},
         {"role": "user", "content": instruction},
     ]
-    _debug("command_translation_request", messages)
+    debug("command_translation_request", messages)
 
     try:
         response = chat(model=MODEL_NAME, messages=messages, keep_alive=0)
         command = (response.message.content or "").strip()
-        _debug("command_translation_response", command)
+        debug("command_translation_response", command)
 
         if command.lower().startswith("command:"):
             command = command.split(":", 1)[1].strip()
@@ -91,7 +90,7 @@ def translate_instruction_to_command(instruction: str) -> Optional[str]:
             command = command.splitlines()[0].strip()
 
         if command.upper() == "NONE":
-            _debug(
+            debug(
                 "command_translation_none",
                 {"instruction": instruction, "reason": "model_returned_NONE"},
             )
@@ -102,7 +101,7 @@ def translate_instruction_to_command(instruction: str) -> Optional[str]:
 
         sanitized = sanitize_command(command)
         if sanitized:
-            _debug("command_translation_sanitized", sanitized)
+            debug("command_translation_sanitized", sanitized)
             _set_last_command_translation_error(None)
             return sanitized
 
@@ -112,7 +111,7 @@ def translate_instruction_to_command(instruction: str) -> Optional[str]:
             if fixed and fixed != command:
                 fixed_sanitized = sanitize_command(fixed)
                 if fixed_sanitized:
-                    _debug("command_translation_quote_fix", fixed_sanitized)
+                    debug("command_translation_quote_fix", fixed_sanitized)
                     _set_last_command_translation_error(None)
                     return fixed_sanitized
 
@@ -121,7 +120,7 @@ def translate_instruction_to_command(instruction: str) -> Optional[str]:
         if leading and leading != command:
             fallback = sanitize_command(leading)
             if fallback:
-                _debug(
+                debug(
                     "command_translation_sanitized_fallback",
                     {
                         "instruction": instruction,
@@ -137,7 +136,7 @@ def translate_instruction_to_command(instruction: str) -> Optional[str]:
             get_last_sanitize_error()
             or "sanitize_command rejected the suggested command as unsafe"
         )
-        _debug(
+        debug(
             "command_translation_rejected",
             {
                 "instruction": instruction,
@@ -163,12 +162,12 @@ def translate_instruction_to_query(instruction: str) -> Optional[str]:
         {"role": "user", "content": instruction},
     ]
 
-    _debug("query_translation_request", messages)
+    debug("query_translation_request", messages)
 
     try:
         response = chat(model=MODEL_NAME, messages=messages, keep_alive=0)
         query = (response.message.content or "").strip()
-        _debug("query_translation_response", query)
+        debug("query_translation_response", query)
 
         if "\n" in query:
             query = query.splitlines()[0].strip()

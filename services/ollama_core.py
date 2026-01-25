@@ -18,7 +18,6 @@ from config import (
 )
 from services.ollama_shared import (
     MAX_HISTORY_LENGTH,
-    MAX_TOOL_OUTPUT_IN_HISTORY,
     MODEL_NAME,
 )
 from utils.logger import GREEN, RST, debug_payload, logger
@@ -140,6 +139,7 @@ def generate_content(prompt: str) -> str | tuple[str, str | None]:
             "chat_request",
             {
                 "messages": _redact_system_content_in_messages(messages),
+                "tools": list(available_functions.keys()),
             },
         )
 

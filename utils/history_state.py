@@ -59,11 +59,9 @@ def remember_generated_output(
     for msg in messages:
         msg_id = getattr(msg, "message_id", None)
         if not msg or not msg_id:
-            if DEBUG_HISTORY_STATE:
-                logger.debug("[history_state] remember_generated_output: skipping message with no message_id: %r", msg)
+            logger.debug(f"[history_state] remember_generated_output: skipping message with no message_id: {msg!r}")
             continue
-        if DEBUG_HISTORY_STATE:
-            logger.debug("[history_state] remember_generated_output: recording message_id=%r prompt=%r tool_info=%r", msg_id, prompt, tool_info)
+        logger.debug(f"[history_state] remember_generated_output: recording message_id={msg_id!r} prompt={prompt!r} tool_info={tool_info!r}")
         prompt_history[msg_id] = prompt
         if tool_info:
             output_metadata[msg_id] = {

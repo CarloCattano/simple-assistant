@@ -9,23 +9,69 @@ except ImportError:  # pragma: no cover - telegram is only required for the bot 
 
 from config import ADMIN_ID, DEBUG_USER_ACTIONS
 
+
+import logging
+
+
 RED = "\033[91m"
 GREEN = "\033[92m"
 YELLOW = "\033[93m"
 RST = "\033[0m"
 
-logger = logging.getLogger("usage")
 
-_level_name = os.getenv("LOG_LEVEL", "WARNING").upper()
-_level = getattr(logging, _level_name, logging.INFO)
 
-handler = logging.FileHandler("usage.log")
-formatter = logging.Formatter("%(message)s")
-handler.setFormatter(formatter)
-handler.setLevel(_level)
-logger.addHandler(handler)
+LOG_LEVEL = os.getenv("LOG_LEVEL", "WARNING").upper()
+logger = logging.getLogger("simple_assistant")
+logger.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
 
-logger.setLevel(_level)
+if not logger.hasHandlers():
+    handler = logging.FileHandler("usage.log")
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+
+def debug(msg: str):
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(msg)
+
+def info(msg: str):
+    if logger.isEnabledFor(logging.INFO):
+        logger.info(msg)
+
+def warn(msg: str):
+    if logger.isEnabledFor(logging.WARNING):
+        logger.warning(msg)
+
+def error(msg: str):
+    if logger.isEnabledFor(logging.ERROR):
+        logger.error(msg)
+
+def debug_payload(label: str, payload: Any) -> None:
+    try:
+        serialized = json.dumps(payload, indent=2, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        serialized = repr(payload)
+    logger.debug(f"{label}: {serialized}")
+
+def log_user_action(action: str, update: Update, extra: str = ""):
+    if not DEBUG_USER_ACTIONS:
+        return
+    effective_user = getattr(update, "effective_user", None)
+    effective_message = getattr(update, "effective_message", None)
+    if not effective_user and effective_message and hasattr(effective_message, "from_user"):
+        effective_user = effective_message.from_user
+    user_id = getattr(effective_user, "id", "unknown")
+    username = getattr(effective_user, "username", None) or "N/A"
+    full_name = (
+        getattr(effective_user, "full_name", None)
+        or getattr(effective_user, "name", None)
+        or "?"
+    )
+    user_info = f"User: {user_id} - @{username} ({full_name})"
+    log_entry = f"{user_info} | Action: {action}"
+    if extra:
+        log_entry += f" | Detail: {extra}"
+    logger.info(log_entry)
 
 
 def log_user_action(action: str, update: Update, extra: str = ""):

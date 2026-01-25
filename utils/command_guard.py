@@ -2,7 +2,7 @@ import re
 import shlex
 from typing import Optional
 
-from utils.logger import logger, YELLOW, RST, RED, GREEN
+from utils.logger import logger
 
 from utils.tool_directives import ALLOWED_SHELL_CMDS as ALLOWED_COMMANDS
 
@@ -65,11 +65,7 @@ def sanitize_command(command: str) -> Optional[str]:
         if need_binary:
             if token not in ALLOWED_COMMANDS:
                 _last_sanitize_error = f"unknown binary {token!r}; only a curated safe list is allowed"
-                from config import DEBUG_TOOL_DIRECTIVES
-                if DEBUG_TOOL_DIRECTIVES:
-                    logger.debug(
-                        f"{RED}rejecting unknown binary {token!r} in command {command!r}{RST}"
-                    )
+                logger.debug(f"rejecting unknown binary {token!r} in command {command!r}")
                 return None
             last_binary = token
             need_binary = False
@@ -78,15 +74,13 @@ def sanitize_command(command: str) -> Optional[str]:
                 next_arg = parts[idx + 1]
                 if last_binary in {"rm", "cp", "mv"} and next_arg == "/":
                     _last_sanitize_error = f"{last_binary} / is not allowed for safety"
-                    logger.debug(f"{RED}rejecting dangerous {last_binary} / usage in command: {command!r}{RST}")
+                    logger.debug(f"rejecting dangerous {last_binary} / usage in command: {command!r}")
                     return None
 
     _last_sanitize_error = None
     sanitized = command
     
-    from config import DEBUG_TOOL_DIRECTIVES
-    if DEBUG_TOOL_DIRECTIVES:
-        logger.info(f"{YELLOW}accepted sanitized command: {sanitized!r}{RST}")
+    logger.info(f"accepted sanitized command: {sanitized!r}")
     return sanitized
 
 

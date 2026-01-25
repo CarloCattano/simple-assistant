@@ -47,13 +47,12 @@ def evaluate_tool_usage(prompt: str) -> Tuple[bool, Dict[str, dict]]:
         name: entry
         for name, entry in available_functions.items()
         if any(
-            re.match(r"\b" + re.escape(trigger) + r"\b", lower_prompt)
+            re.match(r"^" + re.escape(trigger) + r"\b", lower_prompt)
             for trigger in entry.get("triggers", [])
         )
     }
 
-    should_use = bool(matched_tools) or TOOL_MODE
-
+    should_use = bool(matched_tools)
     return should_use, matched_tools
 
 
@@ -138,72 +137,74 @@ def call_tool_with_tldr(
                 return "I couldn't infer a web search query from that request."
             working_arguments["query"] = translated
 
-    def _retry_shell_agent(tool_callable, working_arguments, translate_instruction_to_command, fetch_cheat, max_attempts=3):
-        attempted_commands = set()
-        original_prompt = working_arguments.get("prompt")
-        last_output = None
-        used_cheat = False
+    raw_output: Any
+    if tool_name == "shell_agent":
+        max_attempts = 3
         attempt = 0
-        cheat_context_command = None
+        last_output: Any = None
+
         while attempt < max_attempts:
             attempt += 1
-            current_prompt = working_arguments.get("prompt")
-            if current_prompt in attempted_commands:
-                logger.info(f"shell_agent: already tried command '{current_prompt}', skipping to avoid repeat.")
-                break
-            attempted_commands.add(current_prompt)
             last_output = tool_callable(**working_arguments)
-            # If the tool_callable returns None or not a dict, treat as parsing/sanitization failure and trigger retry
+
             if not isinstance(last_output, dict):
-                logger.info("shell_agent: command parsing/sanitization failed, triggering LLM retry.")
-                has_error = True
-            else:
-                exit_code = last_output.get("exit_code")
-                stderr = (last_output.get("stderr") or "").strip()
-                stdout = (last_output.get("stdout") or "").strip()
-                # Treat any exit code != 0 as a failure, always
-                has_error = exit_code not in (0, None)
-                if has_error:
-                    logger.info(f"shell_agent: exit code {exit_code} (failure), stderr: {stderr}")
-                lower_err = stderr.lower()
-                if not has_error and stderr:
-                    for marker in (
-                        "unknown option",
-                        "unrecognized option",
-                        "invalid option",
-                        "command not found",
-                        "permission denied",
-                        "no such file or directory",
-                        "cannot access",
-                        "not found",
-                        "no such file or directory",
-                        "failed",
-                        "error",
-                    ):
-                        if marker in lower_err:
-                            has_error = True
-                            break
-                if not has_error and exit_code == 0 and not stdout.strip():
-                    logger.info("shell_agent: exit 0 but no output, treating as failure to trigger retry/fallback")
-                    has_error = True
-            if not has_error:
-                return last_output
-            logger.info(f"shell_agent attempt {attempt} failed: exit_code={exit_code}, stderr={stderr!r}, stdout={stdout!r}")
-            # Try LLM refinement
-            if not translate_instruction_to_command or not isinstance(original_prompt, str):
                 break
+
+            exit_code = last_output.get("exit_code")
+            stderr = (last_output.get("stderr") or "").strip()
+            stdout = (last_output.get("stdout") or "").strip()
+
+            has_error = exit_code not in (0, None)
+
+            lower_err = stderr.lower()
+            if not has_error and stderr:
+                for marker in (
+                    "unknown option",
+                    "unrecognized option",
+                    "invalid option",
+                    "command not found",
+                    "permission denied",
+                    "no such file or directory",
+                    "cannot access",
+                    "not found",
+                    "no such file or directory",
+                    "failed",
+                    "error",
+                ):
+                    if marker in lower_err:
+                        has_error = True
+                        break
+
+            # If command succeeded but produced no output, consider it a failure
+            # Most information-gathering commands should produce at least some output
+            if not has_error and exit_code == 0 and not stdout.strip():
+                has_error = True
+
+            if not has_error:
+                break
+
+            logger.info(
+                f"shell_agent attempt {attempt} failed: exit_code={exit_code}, stderr={stderr!r}, stdout={stdout!r}"
+            )
+
+            original_prompt = working_arguments.get("prompt")
+            if (
+                not isinstance(original_prompt, str)
+                or not translate_instruction_to_command
+            ):
+                break
+
             context_instruction = (
                 f"The command '{last_output.get('command')}' failed. "
                 f"Suggest a simple alternative command for the same task: {original_prompt}"
             )
+
             new_command = translate_instruction_to_command(context_instruction)
-            if new_command and new_command not in attempted_commands:
-                logger.info(f"shell_agent retry {attempt}/{max_attempts}: refining command from {current_prompt!r} to {new_command!r}")
-                working_arguments["prompt"] = new_command
-                continue
-            # If LLM can't help, try cheat.sh ONCE per session
-            if not used_cheat:
-                used_cheat = True
+            if not new_command:
+                logger.info(
+                    f"shell_agent retry {attempt}/{max_attempts}: no new command generated, aborting retry"
+                )
+                # As a last-ditch attempt, try to fetch cheat.sh usage for the primary binary
                 try:
                     primary = None
                     if isinstance(original_prompt, str) and original_prompt.strip():
@@ -212,52 +213,63 @@ def call_tool_with_tldr(
                         except Exception:
                             primary = None
                     if primary:
-                        logger.info(f"shell_agent: fetching cheat.sh for '{primary}' to aid retries")
-                        cheat_text = fetch_cheat(primary)
-                        if isinstance(cheat_text, str) and not cheat_text.startswith("Error"):
-                            context_instruction = (
-                                f"The command '{last_output.get('command')}' failed. "
-                                f"Here is a short usage reference for {primary}:\n{cheat_text}\n"
-                                f"Suggest a simple alternative command that accomplishes: {original_prompt}\n"
-                                "Respond ONLY with the new shell command."
-                            )
-                            cheat_context_command = translate_instruction_to_command(context_instruction)
-                            if cheat_context_command and cheat_context_command not in attempted_commands:
-                                logger.info(f"shell_agent: retrying with cheat.sh suggestion: {cheat_context_command}")
-                                # Do NOT reset attempt counter, just break to do one more final LLM-based retry below
-                                break
-                except Exception as e:
-                    logger.debug(f"Error fetching cheat.sh for {primary}: {e}")
-            break
-        # If we got a cheat_context_command, do one final LLM-based retry with it
-        if cheat_context_command and cheat_context_command not in attempted_commands:
-            working_arguments["prompt"] = cheat_context_command
-            logger.info(f"shell_agent: final LLM retry with cheat.sh context: {cheat_context_command}")
-            last_output = tool_callable(**working_arguments)
-        # After all attempts, treat exit 0 with empty output as failure
-        if isinstance(last_output, dict):
-            exit_code = last_output.get("exit_code")
-            stdout = (last_output.get("stdout") or "").strip()
-            if exit_code == 0 and not stdout:
-                logger.info("shell_agent: final output exit 0 but no output, treating as failure after all retries")
-                last_output["exit_code"] = -3
-                last_output["stderr"] = "All attempts produced no output. Please check your request or try /cheat for manual help."
-        return last_output
+                        logger.info(
+                            f"shell_agent: fetching cheat.sh for '{primary}' to aid retries"
+                        )
+                        try:
+                            cheat_text = fetch_cheat(primary)
+                            if isinstance(
+                                cheat_text, str
+                            ) and not cheat_text.startswith("Error"):
+                                context_instruction = (
+                                    f"The command '{last_output.get('command')}' failed. "
+                                    f"Here is a short usage reference for {primary}:\n{cheat_text}\n"
+                                    f"Suggest a simple alternative command that accomplishes: {original_prompt}\n"
+                                    "Respond ONLY with the new shell command."
+                                )
+                                new_command = translate_instruction_to_command(
+                                    context_instruction
+                                )
+                                if new_command:
+                                    logger.info(
+                                        f"shell_agent retry {attempt}/{max_attempts}: obtained suggestion from cheat.sh context: {new_command}"
+                                    )
+                                    working_arguments["prompt"] = new_command
+                                    continue
+                        except Exception as e:
+                            logger.debug(f"Error fetching cheat.sh for {primary}: {e}")
+                except Exception:
+                    pass
+                break
 
-    raw_output: Any
-    if tool_name == "shell_agent":
-        raw_output = _retry_shell_agent(tool_callable, working_arguments, translate_instruction_to_command, fetch_cheat)
-        # If all attempts failed (exit_code != 0 or error in stderr), return a user-friendly error
-        if isinstance(raw_output, dict):
-            exit_code = raw_output.get("exit_code")
-            stderr = (raw_output.get("stderr") or "").strip()
-            if exit_code not in (0, None) or stderr:
-                raw_output = {
-                    "command": raw_output.get("command", ""),
-                    "exit_code": exit_code,
-                    "stdout": "",
-                    "stderr": "All attempts to generate a valid command failed. Please check your request or try /cheat for manual help."
-                }
+            logger.info(
+                f"shell_agent retry {attempt}/{max_attempts}: refining command from {working_arguments.get('prompt')!r} to {new_command!r}"
+            )
+            working_arguments["prompt"] = new_command
+
+        # After all retries, check if the final command matches the user's intent using LLM
+        final_command = None
+        if isinstance(last_output, dict):
+            final_command = last_output.get("command")
+        original_prompt = arguments.get("prompt")
+        llm_compliance_fail = False
+        if final_command and original_prompt and translate_instruction_to_command:
+            # Ask LLM to translate the original prompt again
+            llm_expected_command = translate_instruction_to_command(original_prompt)
+            if llm_expected_command:
+                # Check if the final command is semantically close to what LLM would generate
+                # Use a simple normalization for now (strip, lower, ignore whitespace)
+                def _norm(cmd):
+                    return " ".join((cmd or "").strip().lower().split())
+                if _norm(final_command) != _norm(llm_expected_command):
+                    logger.info(f"LLM compliance check failed: final_command='{final_command}' vs expected='{llm_expected_command}'")
+                    llm_compliance_fail = True
+        if llm_compliance_fail:
+            logger.info("shell_agent: LLM compliance check failed, treating as fail to allow /cheat fallback")
+            # Simulate a hard failure so cheat fallback can be triggered
+            raw_output = {"command": final_command or "", "exit_code": -2, "stdout": "", "stderr": "LLM compliance check failed: Command does not match user intent."}
+        else:
+            raw_output = last_output
     else:
         raw_output = tool_callable(**working_arguments)
     raw_text = _format_tool_output(tool_name, raw_output)
@@ -354,12 +366,6 @@ def call_tool_with_tldr(
 def _format_tool_output(tool_name: str, raw_output: Any) -> str:
     if tool_name == "shell_agent":
         if isinstance(raw_output, dict):
-            # If this is the user-friendly error, suppress command details
-            if (
-                raw_output.get("stderr", "").startswith("All attempts to generate a valid command failed")
-                or raw_output.get("stderr", "").startswith("All attempts produced no output.")
-            ):
-                return raw_output.get("stderr", "Unknown error")
             command = raw_output.get("command", "")
             stdout = raw_output.get("stdout", "")
             stderr = raw_output.get("stderr", "")

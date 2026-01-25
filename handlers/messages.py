@@ -174,6 +174,10 @@ async def _send_code_block_chunked(
     """
     Unified: Send a long code block as multiple Telegram messages with balanced fences.
     """
+    import json
+    # Ensure body is a string; if dict, convert to JSON string
+    if isinstance(body, dict):
+        body = json.dumps(body, indent=2, ensure_ascii=False)
     return await unified_send_code_block_chunked(
         target,
         body,

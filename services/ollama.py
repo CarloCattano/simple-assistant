@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import json
 import os
 import re
@@ -6,7 +7,8 @@ import threading
 import uuid
 from collections import deque
 from datetime import UTC, datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
+import asyncio
 
 from ollama import chat as _ollama_chat
 
@@ -18,19 +20,35 @@ from config import (
 )
 from services.ollama_shared import (
     COMMAND_TRANSLATOR_SYSTEM_PROMPT,
-    CONTENT_REPORTER_SCRIPT_PROMPT,
     MAX_HISTORY_LENGTH,
     MAX_TOOL_OUTPUT_IN_HISTORY,
     MODEL_NAME,
     QUERY_TRANSLATOR_SYSTEM_PROMPT,
 )
 from tools import load_tools
+from services.ollama_tools import (
+    evaluate_tool_usage,
+    call_tool_with_tldr,
+    tldr_tool_output,
+    build_audio_script,
+    run_tool_direct,
+    resolve_tool_identifier,
+)
+# Export run_tool_direct and resolve_tool_identifier for external imports
+__all__ = [
+    "evaluate_tool_usage",
+    "call_tool_with_tldr",
+    "tldr_tool_output",
+    "build_audio_script",
+    "run_tool_direct",
+    "resolve_tool_identifier",
+]
 from utils.command_guard import (
     detect_direct_command,
     get_last_sanitize_error,
     sanitize_command,
 )
-from utils.logger import RED, RST, logger
+from utils.logger import logger, debug_payload
 
 if hasattr(_ollama_chat, "chat"):
     chat = _ollama_chat.chat
@@ -48,11 +66,6 @@ user_histories: Dict[str, List[Dict[str, str]]] = {}
 
 available_functions = load_tools()
 
-if DEBUG_OLLAMA:
-    logger.debug(
-        f"Loaded {len(available_functions)} tools for Ollama. {list(available_functions.keys())}"
-    )
-
 TOOL_MODE = False
 
 EVENT_LOG_LIMIT = 200
@@ -63,13 +76,10 @@ OLLAMA_URL = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
 _event_log: deque[Dict[str, Any]] = deque(maxlen=EVENT_LOG_LIMIT)
 _last_command_translation_error: Optional[str] = None
 
-from utils.logger import debug_payload
 
-_debug = (
-    lambda *args, **kwargs: debug_payload(*args, **kwargs)
-    if DEBUG_OLLAMA or DEBUG_TOOL_DIRECTIVES
-    else None
-)
+def debug(*args, **kwargs):
+    if logger.isEnabledFor(logging.DEBUG):
+        debug_payload(*args, **kwargs)
 
 
 def _redact_system_content_in_messages(
@@ -94,34 +104,6 @@ def _sanitize_payload(payload: Any) -> Any:
     return payload
 
 
-def evaluate_tool_usage(prompt: str) -> Tuple[bool, Dict[str, dict]]:
-    assert isinstance(prompt, str)
-    lower_prompt = prompt.lower()
-
-    if (
-        prompt.startswith("Given this shell output:")
-        or "answer this question:" in lower_prompt
-    ):
-        return False, {}
-
-    if "previous command:" in lower_prompt:
-        shell_agent_entry = available_functions.get("shell_agent")
-        if shell_agent_entry:
-            return True, {"shell_agent": shell_agent_entry}
-
-    matched_tools = {
-        name: entry
-        for name, entry in available_functions.items()
-        if any(
-            re.match(r"\b" + re.escape(trigger) + r"\b", lower_prompt)
-            for trigger in entry.get("triggers", [])
-        )
-    }
-
-    should_use = bool(matched_tools) or TOOL_MODE
-
-    return should_use, matched_tools
-
 
 def generate_content(prompt: str) -> str | tuple[str, str | None]:
     user_id = _get_or_create_user_id()
@@ -134,7 +116,7 @@ def generate_content(prompt: str) -> str | tuple[str, str | None]:
     _trim_history(history)
     _record_event("user", prompt, user_id=user_id)
     if DEBUG_HISTORY_STATE:
-        _debug(
+        debug(
             "history_after_user",
             {
                 "user_id": user_id,
@@ -144,7 +126,7 @@ def generate_content(prompt: str) -> str | tuple[str, str | None]:
 
     try:
         use_tools, matched_tools = evaluate_tool_usage(prompt)
-        _debug(
+        debug(
             "tool_evaluation",
             {
                 "prompt": prompt,
@@ -154,7 +136,7 @@ def generate_content(prompt: str) -> str | tuple[str, str | None]:
         )
         messages = history
 
-        _debug(
+        debug(
             "chat_request",
             {
                 "messages": _redact_system_content_in_messages(messages),
@@ -181,7 +163,7 @@ def generate_content(prompt: str) -> str | tuple[str, str | None]:
         if response_message_content is not None:
             log_payload["message_content"] = response_message_content
         if log_payload:
-            _debug("chat_response", log_payload)
+            debug("chat_response", log_payload)
 
         if response.message.tool_calls:
             # Add the assistant's message with tool calls to history for context
@@ -194,7 +176,7 @@ def generate_content(prompt: str) -> str | tuple[str, str | None]:
                 ],
             }
             history.append(assistant_message)
-            _debug(
+            debug(
                 "tool_calls",
                 [call.function.name for call in response.message.tool_calls],
             )
@@ -203,7 +185,7 @@ def generate_content(prompt: str) -> str | tuple[str, str | None]:
                 if func_entry and (
                     not matched_tools or tool.function.name in matched_tools
                 ):
-                    _debug(
+                    debug(
                         "executing_tool",
                         {
                             "tool": tool.function.name,
@@ -227,7 +209,7 @@ def generate_content(prompt: str) -> str | tuple[str, str | None]:
         history.append({"role": "assistant", "content": reply})
 
         _record_event("assistant", reply)
-        _debug(
+        debug(
             "assistant_reply",
             {
                 "user_id": user_id,
@@ -249,46 +231,10 @@ def escape_entities(text: str) -> str:
     return text
 
 
-def tldr_tool_output(tool_name: str, output: str) -> str:
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {
-            "role": "assistant",
-            "content": f"Tool {tool_name} returned the following data:\n{output}",
-        },
-        {
-            "role": "user",
-            "content": "Summarize the key points in no more than three sentences.",
-        },
-    ]
-    response = chat(model=MODEL_NAME, messages=messages, keep_alive=0)
-
-    return response.message.content or ""
 
 
-def build_audio_script(summary_text: str) -> Optional[str]:
-    try:
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {
-                "role": "assistant",
-                "content": f"Here is the summary you produced earlier: {summary_text}",
-            },
-            {
-                "role": "user",
-                "content": CONTENT_REPORTER_SCRIPT_PROMPT,
-            },
-        ]
 
-        response = chat(model=MODEL_NAME, messages=messages, keep_alive=0)
-        content = response.message.content
-        if content is not None:
-            return content.strip()
-        else:
-            return None
-    except Exception as err:
-        logger.error(f"Error generating audio script: {err}")
-        return None
+
 
 
 def call_tool_with_tldr(
@@ -315,429 +261,9 @@ def call_tool_with_tldr(
                 return "I couldn't infer a web search query from that request."
             working_arguments["query"] = translated
 
-    raw_output: Any
-    if tool_name == "shell_agent":
-        max_attempts = 3
-        attempt = 0
-        last_output: Any = None
-
-        while attempt < max_attempts:
-            attempt += 1
-            last_output = tool_callable(**working_arguments)
-
-            if not isinstance(last_output, dict):
-                break
-
-            exit_code = last_output.get("exit_code")
-            stderr = (last_output.get("stderr") or "").strip()
-            stdout = (last_output.get("stdout") or "").strip()
-
-            has_error = exit_code not in (0, None)
-
-            lower_err = stderr.lower()
-            if not has_error and stderr:
-                for marker in (
-                    "unknown option",
-                    "unrecognized option",
-                    "invalid option",
-                    "command not found",
-                    "permission denied",
-                    "no such file or directory",
-                    "cannot access",
-                    "not found",
-                    "no such file or directory",
-                    "failed",
-                    "error",
-                ):
-                    if marker in lower_err:
-                        has_error = True
-                        break
-
-            # If command succeeded but produced no output, consider it a failure
-            # Most information-gathering commands should produce at least some output
-            if not has_error and exit_code == 0 and not stdout.strip():
-                has_error = True
-
-            if not has_error:
-                break
-
-            logger.info(
-                f"shell_agent attempt {attempt} failed: exit_code={exit_code}, stderr={stderr!r}, stdout={stdout!r}"
-            )
-
-            original_prompt = working_arguments.get("prompt")
-            if (
-                not isinstance(original_prompt, str)
-                or not translate_instruction_to_command
-            ):
-                break
-
-            context_instruction = (
-                f"The command '{last_output.get('command')}' failed. "
-                f"Suggest a simple alternative command for the same task: {original_prompt}"
-            )
-
-            new_command = translate_instruction_to_command(context_instruction)
-            if not new_command:
-                logger.info(
-                    f"shell_agent retry {attempt}/{max_attempts}: no new command generated, aborting retry"
-                )
-                break
-
-            logger.info(
-                f"shell_agent retry {attempt}/{max_attempts}: refining command from {working_arguments.get('prompt')!r} to {new_command!r}"
-            )
-            working_arguments["prompt"] = new_command
-
-        # After max retries, if still failed, use cheat to refine
-        if isinstance(last_output, dict) and last_output.get("exit_code") not in (
-            0,
-            None,
-        ):
-            command_name = last_output.get("command", "").split()[0]
-            if command_name:
-                try:
-                    cheat_result = run_tool_direct("cheat", {"command": command_name})
-                    if cheat_result:
-                        context_instruction = (
-                            f"{RED}Previous command failed:{RST} {last_output.get('command')}\n"
-                            f"{RED}Error: {last_output.get('stderr')}\n"
-                            f"{RST}Cheat info: {cheat_result}\n"
-                            f"Note: The cheat info contains example variables (e.g., './folder'). Replace them with appropriate values from the original instruction.\n"
-                            f"Please provide a corrected command for: {arguments.get('prompt', '')}"
-                        )
-                        new_command = translate_instruction_to_command(
-                            context_instruction
-                        )
-                        if new_command and new_command != last_output.get("command"):
-                            logger.info(
-                                f"Cheat-assisted retry: refining to {new_command!r}"
-                            )
-                            working_arguments["prompt"] = new_command
-                            last_output = tool_callable(**working_arguments)
-                except Exception as cheat_err:
-                    logger.error(f"Error in cheat-assisted retry: {cheat_err}")
-
-        raw_output = last_output
-    else:
-        raw_output = tool_callable(**working_arguments)
-    raw_text = _format_tool_output(tool_name, raw_output)
-    _debug(
-        "tool_raw_output",
-        {
-            "tool": tool_name,
-            "arguments": working_arguments,
-            "raw_output": raw_output,
-        },
-    )
-
-    # Truncate tool output for history to keep it manageable
-    truncated_text = raw_text[:MAX_TOOL_OUTPUT_IN_HISTORY] + (
-        "..." if len(raw_text) > MAX_TOOL_OUTPUT_IN_HISTORY else ""
-    )
-
-    history.append({"role": "tool", "name": tool_name, "content": truncated_text})
-
-    _record_event(
-        "tool_call",
-        f"{tool_name} completed",
-        {
-            "arguments": _stringify_data(working_arguments)
-            if working_arguments
-            else "{}",
-            "output": raw_text,
-        },
-    )
-
-    if tool_name in ("shell_agent", "cheat", "fetch_cheat", "cheat.sh"):
-        if DEBUG_OLLAMA or DEBUG_TOOL_DIRECTIVES:
-            logger.info(
-                f"Skipping TLDR for {tool_name}; returning raw tool output only."
-            )
-        return raw_text if not tldr_separate else (raw_text, None)
-
-    summary = None
-    try:
-        summary = tldr_tool_output(tool_name, raw_text)
-    except Exception as err:
-        logger.error(f"Error generating TLDR for tool {tool_name}: {err}")
-
-    if summary:
-        summary_text = summary
-        if DEBUG_OLLAMA or DEBUG_TOOL_DIRECTIVES:
-            logger.info(f"TLDR ready for {tool_name}: {summary_text}")
-        _record_event("tldr", f"{tool_name}: {summary_text}")
-        _debug(
-            "tldr_summary",
-            {
-                "tool": tool_name,
-                "summary": summary_text,
-            },
-        )
-        history.append(
-            {
-                "role": "assistant",
-                "content": f"TLDR (from {tool_name}): {summary_text}",
-            }
-        )
-        try:
-            audio_script = build_audio_script(summary_text) or summary_text
-            if DEBUG_OLLAMA or DEBUG_TOOL_DIRECTIVES:
-                logger.info(f"Queued TLDR audio script for {tool_name}: {audio_script}")
-            _set_last_tool_audio(
-                {
-                    "summary": summary_text,
-                    "tool_name": tool_name,
-                    "script": audio_script,
-                }
-            )
-            _record_event("audio_queue", f"Queued TLDR audio for {tool_name}")
-            _debug(
-                "audio_queue_payload",
-                {
-                    "tool": tool_name,
-                    "audio_script": audio_script,
-                },
-            )
-        except Exception as audio_err:
-            logger.error(
-                f"Error building audio script for tool {tool_name}: {audio_err}"
-            )
-
-        if tldr_separate:
-            return raw_text, summary_text
-        else:
-            return f"{raw_text}\n\nTLDR: {summary_text}"
-
-    return raw_text if not tldr_separate else (raw_text, None)
-
-
-async def call_tool_with_tldr_async(
-    tool_name: str,
-    tool_callable,
-    history: list,
-    tldr_separate: bool = False,
-    **arguments,
-) -> str | tuple[str, str | None]:
-    working_arguments = dict(arguments)
-
-    if (
-        tool_name == "web_search"
-        and translate_instruction_to_query
-        and isinstance(working_arguments.get("query"), str)
-    ):
-        query = working_arguments["query"].strip()
-        if query:
-            translated = await asyncio.to_thread(translate_instruction_to_query, query)
-            if not translated:
-                logger.warning(
-                    "Query translation failed for web_search; aborting tool call."
-                )
-                return "I couldn't infer a web search query from that request."
-            working_arguments["query"] = translated
-
-    raw_output: Any
-    if tool_name == "shell_agent":
-        max_attempts = 3
-        attempt = 0
-        last_output: Any = None
-
-        while attempt < max_attempts:
-            attempt += 1
-            last_output = await asyncio.to_thread(tool_callable, **working_arguments)
-
-            if not isinstance(last_output, dict):
-                break
-
-            exit_code = last_output.get("exit_code")
-            stderr = (last_output.get("stderr") or "").strip()
-            stdout = (last_output.get("stdout") or "").strip()
-
-            has_error = exit_code not in (0, None)
-
-            lower_err = stderr.lower()
-            if not has_error and stderr:
-                for marker in (
-                    "unknown option",
-                    "unrecognized option",
-                    "invalid option",
-                    "command not found",
-                    "permission denied",
-                    "no such file or directory",
-                    "cannot access",
-                    "not found",
-                    "no such file or directory",
-                    "failed",
-                    "error",
-                ):
-                    if marker in lower_err:
-                        has_error = True
-                        break
-
-            # If command succeeded but produced no output, consider it a failure
-            if not has_error and exit_code == 0 and not stdout.strip():
-                has_error = True
-
-            if not has_error:
-                break
-
-            logger.info(
-                f"shell_agent attempt {attempt} failed: exit_code={exit_code}, stderr={stderr!r}, stdout={stdout!r}"
-            )
-
-            original_prompt = working_arguments.get("prompt")
-            if (
-                not isinstance(original_prompt, str)
-                or not translate_instruction_to_command
-            ):
-                break
-
-            context_instruction = (
-                f"The command '{last_output.get('command')}' failed. "
-                f"Suggest a simple alternative command for the same task: {original_prompt}"
-            )
-
-            new_command = await asyncio.to_thread(
-                translate_instruction_to_command, context_instruction
-            )
-            if not new_command:
-                logger.info(
-                    f"shell_agent retry {attempt}/{max_attempts}: no new command generated, aborting retry"
-                )
-                break
-
-            logger.info(
-                f"shell_agent retry {attempt}/{max_attempts}: refining command from {working_arguments.get('prompt')!r} to {new_command!r}"
-            )
-            working_arguments["prompt"] = new_command
-
-        # After max retries, if still failed, use cheat to refine
-        if isinstance(last_output, dict) and last_output.get("exit_code") not in (
-            0,
-            None,
-        ):
-            command_name = last_output.get("command", "").split()[0]
-            if command_name:
-                try:
-                    cheat_result = await asyncio.to_thread(
-                        run_tool_direct, "cheat", {"command": command_name}
-                    )
-                    if cheat_result:
-                        context_instruction = (
-                            f"Previous command failed: {last_output.get('command')}\n"
-                            f"Error: {last_output.get('stderr')}\n"
-                            f"Cheat info: {cheat_result}\n"
-                            f"Note: The cheat info contains example variables (e.g., './folder'). Replace them with appropriate values from the original instruction.\n"
-                            f"Please provide a corrected command for: {arguments.get('prompt', '')}"
-                        )
-                        new_command = await asyncio.to_thread(
-                            translate_instruction_to_command, context_instruction
-                        )
-                        if new_command and new_command != last_output.get("command"):
-                            logger.info(
-                                f"Cheat-assisted retry: refining to {new_command!r}"
-                            )
-                            working_arguments["prompt"] = new_command
-                            last_output = await asyncio.to_thread(
-                                tool_callable, **working_arguments
-                            )
-                except Exception as cheat_err:
-                    logger.error(f"Error in cheat-assisted retry: {cheat_err}")
-
-        raw_output = last_output
-    else:
-        raw_output = await asyncio.to_thread(tool_callable, **working_arguments)
-    raw_text = _format_tool_output(tool_name, raw_output)
-    _debug(
-        "tool_raw_output",
-        {
-            "tool": tool_name,
-            "arguments": working_arguments,
-            "raw_output": raw_output,
-        },
-    )
-
-    truncated_text = raw_text[:MAX_TOOL_OUTPUT_IN_HISTORY] + (
-        "..." if len(raw_text) > MAX_TOOL_OUTPUT_IN_HISTORY else ""
-    )
-
-    history.append({"role": "tool", "name": tool_name, "content": truncated_text})
-
-    _record_event(
-        "tool_call",
-        f"{tool_name} completed",
-        {
-            "arguments": _stringify_data(working_arguments)
-            if working_arguments
-            else "{}",
-            "output": raw_text,
-        },
-    )
-
-    if tool_name in ("shell_agent", "cheat", "fetch_cheat", "cheat.sh"):
-        if DEBUG_OLLAMA or DEBUG_TOOL_DIRECTIVES:
-            logger.info(
-                f"Skipping TLDR for {tool_name}; returning raw tool output only."
-            )
-        return raw_text if not tldr_separate else (raw_text, None)
-
-    summary = None
-    try:
-        summary = await asyncio.to_thread(tldr_tool_output, tool_name, raw_text)
-    except Exception as err:
-        logger.error(f"Error generating TLDR for tool {tool_name}: {err}")
-
-    if summary:
-        summary_text = summary
-        if DEBUG_OLLAMA or DEBUG_TOOL_DIRECTIVES:
-            logger.info(f"TLDR ready for {tool_name}: {summary_text}")
-        _record_event("tldr", f"{tool_name}: {summary_text}")
-        _debug(
-            "tldr_summary",
-            {
-                "tool": tool_name,
-                "summary": summary_text,
-            },
-        )
-        history.append(
-            {
-                "role": "assistant",
-                "content": f"TLDR (from {tool_name}): {summary_text}",
-            }
-        )
-        try:
-            audio_script = (
-                await asyncio.to_thread(build_audio_script, summary_text)
-                or summary_text
-            )
-            if DEBUG_OLLAMA or DEBUG_TOOL_DIRECTIVES:
-                logger.info(f"Queued TLDR audio script for {tool_name}: {audio_script}")
-            _set_last_tool_audio(
-                {
-                    "summary": summary_text,
-                    "tool_name": tool_name,
-                    "script": audio_script,
-                }
-            )
-            _record_event("audio_queue", f"Queued TLDR audio for {tool_name}")
-            _debug(
-                "audio_queue_payload",
-                {
-                    "tool": tool_name,
-                    "audio_script": audio_script,
-                },
-            )
-        except Exception as audio_err:
-            logger.error(
-                f"Error building audio script for tool {tool_name}: {audio_err}"
-            )
-
-        if tldr_separate:
-            return raw_text, summary_text
-        else:
-            return f"{raw_text}\n\nTLDR: {summary_text}"
-
-    return raw_text if not tldr_separate else (raw_text, None)
+    # This function is now fully handled by services/ollama_tools.py
+    # Remove all local/duplicate logic. Use the centralized import instead.
+    raise NotImplementedError("call_tool_with_tldr is now handled by services/ollama_tools.py. Use the centralized version.")
 
 
 def _format_tool_output(tool_name: str, raw_output: Any) -> str:
@@ -831,130 +357,18 @@ def _trim_history(history: List[Dict[str, str]]) -> None:
     history[:] = system + recent
 
 
-def run_tool_direct(
-    tool_identifier: str,
-    parameters: Optional[Dict[str, Any]] = None,
-    tldr_separate: bool = False,
-) -> str | tuple[str, str | None] | None:
-    parameters = parameters or {}
-
-    resolved = _resolve_tool_entry(tool_identifier)
-    if not resolved:
-        logger.warning(f"Direct tool request failed: {tool_identifier} not found")
-        return None
-
-    tool_identifier, entry = resolved
-
-    user_id = _get_or_create_user_id()
-    history = user_histories.setdefault(user_id, [])
-    _ensure_system_prompt(history)
-    _record_event(
-        "tool_request",
-        f"Direct tool request: {tool_identifier}",
-        {"parameters": _stringify_data(parameters)},
-    )
-    history.append(
-        {
-            "role": "user",
-            "content": f"[Direct tool request] {tool_identifier} with {parameters}",
-        }
-    )
-
-    try:
-        return call_tool_with_tldr(
-            tool_identifier,
-            entry["function"],
-            history,
-            tldr_separate=tldr_separate,
-            **parameters,
-        )
-    except TypeError as err:
-        logger.error(
-            f"Error executing direct tool {tool_identifier} with {parameters}: {err}"
-        )
-        return f"Error executing tool {tool_identifier}: {err}"
 
 
-async def run_tool_direct_async(
-    tool_identifier: str,
-    parameters: Optional[Dict[str, Any]] = None,
-    tldr_separate: bool = False,
-) -> str | tuple[str, str | None] | None:
-    parameters = parameters or {}
-
-    resolved = _resolve_tool_entry(tool_identifier)
-    if not resolved:
-        logger.warning(f"Direct tool request failed: {tool_identifier} not found")
-        return None
-
-    tool_identifier, entry = resolved
-
-    user_id = _get_or_create_user_id()
-    history = user_histories.setdefault(user_id, [])
-    _ensure_system_prompt(history)
-    _record_event(
-        "tool_request",
-        f"Direct tool request: {tool_identifier}",
-        {"parameters": _stringify_data(parameters)},
-    )
-    history.append(
-        {
-            "role": "user",
-            "content": f"[Direct tool request] {tool_identifier} with {parameters}",
-        }
-    )
-
-    try:
-        return await call_tool_with_tldr_async(
-            tool_identifier,
-            entry["function"],
-            history,
-            tldr_separate=tldr_separate,
-            **parameters,
-        )
-    except TypeError as err:
-        logger.error(
-            f"Error executing direct tool {tool_identifier} with {parameters}: {err}"
-        )
-        return f"Error executing tool {tool_identifier}: {err}"
 
 
-def _resolve_tool_entry(
-    tool_identifier: str,
-) -> Optional[Tuple[str, Dict[str, Any]]]:
-    identifier_lower = tool_identifier.lower()
-
-    entry = available_functions.get(tool_identifier)
-    if entry:
-        return tool_identifier, entry
-
-    for key, candidate in available_functions.items():
-        candidate_name = candidate.get("name", "")
-        candidate_name_lower = candidate_name.lower() if candidate_name else ""
-        function_name = candidate.get("function").__name__
-        function_name_lower = function_name.lower()
-        trigger_matches = any(
-            isinstance(trigger, str) and trigger.lower() == identifier_lower
-            for trigger in candidate.get("triggers", [])
-        )
-
-        if (
-            identifier_lower
-            in (
-                candidate_name_lower,
-                function_name_lower,
-            )
-            or trigger_matches
-        ):
-            return key, candidate
-
-    return None
+# Import the async-compatible wrapper from the shim, so existing imports work
+from services.ollama_async_shim import run_tool_direct_async
 
 
-def resolve_tool_identifier(
-    tool_identifier: str,
-) -> Optional[Tuple[str, Dict[str, Any]]]:
-    return _resolve_tool_entry(tool_identifier)
+
+
+
+
 
 
 def _set_last_command_translation_error(reason: Optional[str]) -> None:
@@ -990,11 +404,11 @@ def translate_instruction_to_command(instruction: str) -> Optional[str]:
         return None
 
     _set_last_command_translation_error(None)
-    _debug("command_translation_input", {"instruction": instruction})
+    debug("command_translation_input", {"instruction": instruction})
 
     direct = detect_direct_command(instruction)
     if direct:
-        _debug("command_translation_direct", direct)
+        debug("command_translation_direct", direct)
         _set_last_command_translation_error(None)
         return direct
 
@@ -1002,12 +416,12 @@ def translate_instruction_to_command(instruction: str) -> Optional[str]:
         {"role": "system", "content": COMMAND_TRANSLATOR_SYSTEM_PROMPT},
         {"role": "user", "content": instruction},
     ]
-    _debug("command_translation_request", messages)
+    debug("command_translation_request", messages)
 
     try:
         response = chat(model=MODEL_NAME, messages=messages, keep_alive=0)
         command = (response.message.content or "").strip()
-        _debug("command_translation_response", command)
+        debug("command_translation_response", command)
 
         if command.lower().startswith("command:"):
             command = command.split(":", 1)[1].strip()
@@ -1016,7 +430,7 @@ def translate_instruction_to_command(instruction: str) -> Optional[str]:
             command = command.splitlines()[0].strip()
 
         if command.upper() == "NONE":
-            _debug(
+            debug(
                 "command_translation_none",
                 {"instruction": instruction, "reason": "model_returned_NONE"},
             )
@@ -1027,7 +441,7 @@ def translate_instruction_to_command(instruction: str) -> Optional[str]:
 
         sanitized = sanitize_command(command)
         if sanitized:
-            _debug("command_translation_sanitized", sanitized)
+            debug("command_translation_sanitized", sanitized)
             _set_last_command_translation_error(None)
             return sanitized
 
@@ -1037,7 +451,7 @@ def translate_instruction_to_command(instruction: str) -> Optional[str]:
             if fixed and fixed != command:
                 fixed_sanitized = sanitize_command(fixed)
                 if fixed_sanitized:
-                    _debug("command_translation_quote_fix", fixed_sanitized)
+                    debug("command_translation_quote_fix", fixed_sanitized)
                     _set_last_command_translation_error(None)
                     return fixed_sanitized
 
@@ -1046,7 +460,7 @@ def translate_instruction_to_command(instruction: str) -> Optional[str]:
         if leading and leading != command:
             fallback = sanitize_command(leading)
             if fallback:
-                _debug(
+                debug(
                     "command_translation_sanitized_fallback",
                     {
                         "instruction": instruction,
@@ -1063,7 +477,7 @@ def translate_instruction_to_command(instruction: str) -> Optional[str]:
             get_last_sanitize_error()
             or "sanitize_command rejected the suggested command as unsafe"
         )
-        _debug(
+        debug(
             "command_translation_rejected",
             {
                 "instruction": instruction,
@@ -1089,12 +503,12 @@ def translate_instruction_to_query(instruction: str) -> Optional[str]:
         {"role": "user", "content": instruction},
     ]
 
-    _debug("query_translation_request", messages)
+    debug("query_translation_request", messages)
 
     try:
         response = chat(model=MODEL_NAME, messages=messages, keep_alive=0)
         query = (response.message.content or "").strip()
-        _debug("query_translation_response", query)
+        debug("query_translation_response", query)
 
         if "\n" in query:
             query = query.splitlines()[0].strip()
@@ -1117,14 +531,14 @@ def translate_instruction_to_query(instruction: str) -> Optional[str]:
 def get_recent_history(limit: int = 15) -> List[Dict[str, Any]]:
     user_id = _get_or_create_user_id()
     history = user_histories.get(user_id, [])
-    _debug("history_snapshot", {"user_id": user_id, "limit": limit, "history": history})
+    debug("history_snapshot", {"user_id": user_id, "limit": limit, "history": history})
     if limit <= 0:
         return history
     return history[-limit:]
 
 
 def get_recent_events(limit: int = 20) -> List[Dict[str, Any]]:
-    _debug("event_log_snapshot", {"limit": limit, "events": list(_event_log)})
+    debug("event_log_snapshot", {"limit": limit, "events": list(_event_log)})
     if limit <= 0:
         return list(_event_log)
     return list(_event_log)[-limit:]

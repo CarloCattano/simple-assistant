@@ -1,8 +1,12 @@
+import asyncio
+from posixpath import pardir
 from typing import List, Tuple
 from urllib.parse import quote
 
-from httpx import Client, RequestError
+import httpx
+from httpx import RequestError
 from parsel import Selector
+
 from utils.logger import logger
 
 MAX_TEXT_CHARS = 1500
@@ -10,77 +14,79 @@ MAX_LINKS = 12
 MAX_SNIPPET_LEN = 160
 MAX_LINK_LEN = 280
 
-client = Client(
-    headers={
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.164 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-    },
-    follow_redirects=True,
-    http2=True,
-    timeout=5.0,
-)
+CLIENT_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.164 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+CLIENT_TIMEOUT = 5.0
+
 
 def web_search(query: str) -> str:
+    """
+    Legacy sync wrapper for backward compatibility.
+    """
+    return asyncio.run(web_search_async(query))
+
+
+async def web_search_async(query: str) -> str:
     query = (query or "").strip()
     if not query:
         return "Please provide a non-empty search query."
 
     logger.debug(f"Performing web search for query: {query}")
 
-    # Primary provider: DuckDuckGo HTML
-    try:
-        summary, links = _search_duckduckgo(query)
-        if summary or links:
-            return _format_search_result(summary, links)
-    except Exception as err:
-        logger.error(f"DuckDuckGo search failed for {query!r}: {err}")
-
-    # Fallback provider: DuckDuckGo lite HTML endpoint (no API key needed).
-    try:
-        summary, links = _search_duckduckgo_lite(query)
-        if summary or links:
-            return _format_search_result(summary, links)
-    except Exception as err:
-        logger.error(f"DuckDuckGo lite search failed for {query!r}: {err}")
-
-    return "I couldn't retrieve search results at the moment. Please try again later."
+    # Run both DuckDuckGo and Lite in parallel, use the first with results
+    results = await asyncio.gather(
+        _search_duckduckgo_async(query), _search_duckduckgo_lite_async(query)
+    )
+    # Prefer the first with results
+    for pairs in results:
+        if pairs:
+            # Filter out irrelevant results
+            relevant_pairs = [p for p in pairs if _is_relevant(p[0], p[1], query)]
+            return _format_search_result(relevant_pairs)
+    return _format_search_result([])
 
 
 tool = {
-    'name': 'web_search',
-    'function': web_search,
-    'triggers': ['search', 'online', 'web search', 'web'],
-    'description': 'Perform a web search and return textual results and links.',
-    'parameters': {
-        'query': {'type': 'string', 'description': 'Search query string'},
+    "name": "web_search",
+    "function": web_search,
+    "triggers": ["search", "online", "web search", "web"],
+    "description": "Perform a web search and return textual results and links.",
+    "parameters": {
+        "query": {"type": "string", "description": "Search query string"},
     },
 }
 
 
-def _search_duckduckgo(query: str) -> Tuple[str, List[str]]:
+async def _search_duckduckgo_async(query: str) -> List[Tuple[str, str]]:
     base_url = "https://html.duckduckgo.com/html/?q="
     url = f"{base_url}{quote(query)}"
-    try:
-        response = client.get(url)
-    except RequestError as err:
-        logger.error(f"HTTP error contacting DuckDuckGo: {err}")
-        return "", []
+    async with httpx.AsyncClient(
+        headers=CLIENT_HEADERS,
+        follow_redirects=True,
+        http2=True,
+        timeout=CLIENT_TIMEOUT,
+    ) as client:
+        try:
+            response = await client.get(url)
+        except RequestError as err:
+            logger.error(f"HTTP error contacting DuckDuckGo: {err}")
+            return []
 
     if response.status_code != 200:
         logger.warning(
-            f"DuckDuckGo returned status {response.status_code} for {url}"
+            f"DuckDuckGo returned status {response.status_code} for {query!r}"
         )
-        return "", []
+        return []
 
-    selector = Selector(text=response.text)
+    selector = Selector(response.text)
+    # ... rest of parsing logic ...
     _remove_kl_dropdown(selector)
 
-    snippets = _extract_snippets(selector)
-    links = _extract_links(selector)
-
-    summary = _truncate_text(" ".join(snippets).strip()) if snippets else ""
-    return summary, links
+    pairs = _extract_snippet_link_pairs(selector)
+    return pairs
 
 
 def _remove_kl_dropdown(selector: Selector) -> None:
@@ -90,35 +96,30 @@ def _remove_kl_dropdown(selector: Selector) -> None:
             parent.remove(select_node.root)
 
 
-def _extract_snippets(selector: Selector) -> list[str]:
-    snippets: list[str] = []
-    total_len = 0
-    for part in selector.xpath("//body//text()").getall():
-        stripped = part.strip()
-        if not stripped:
-            continue
-        if len(stripped) > MAX_SNIPPET_LEN:
-            stripped = stripped[:MAX_SNIPPET_LEN].rsplit(" ", 1)[0] + "…"
-        snippets.append(stripped.replace(".0000000", "\n --- \n"))
-        total_len += len(stripped)
-        if total_len >= MAX_TEXT_CHARS:
+def _extract_snippet_link_pairs(selector: Selector) -> list[tuple[str, str]]:
+    # DuckDuckGo HTML: .result, Lite: .result
+    pairs = []
+    for node in selector.css(".result"):
+        snippet = (
+            node.css(".result__snippet, .result-snippet")
+            .xpath("string()")
+            .get(default="")
+            .strip()
+        )
+        link = ""
+        link_node = node.css(".result__a, .result-link")
+        if link_node:
+            href = link_node.attrib.get("href", "").strip()
+            link = _clean_link(href)
+        if snippet and link:
+            pairs.append((snippet, link))
+        elif snippet:
+            pairs.append((snippet, ""))
+        elif link:
+            pairs.append(("", link))
+        if len(pairs) >= MAX_LINKS:
             break
-    return snippets
-
-
-def _extract_links(selector: Selector) -> list[str]:
-    clean_links: list[str] = []
-    seen = set()
-    for link in selector.xpath("//a/@href").getall():
-        if len(link) > MAX_LINK_LEN:
-            continue
-        cleaned = _clean_link(link)
-        if cleaned and cleaned not in seen:
-            clean_links.append(cleaned)
-            seen.add(cleaned)
-            if len(clean_links) >= MAX_LINKS * 2:
-                break
-    return clean_links
+    return pairs
 
 
 def _clean_link(link: str) -> str:
@@ -129,57 +130,69 @@ def _clean_link(link: str) -> str:
     if stripped.startswith("/html/?") or stripped.startswith("html/?"):
         return ""
 
+    # Remove URL params
+    if "?" in stripped:
+        stripped = stripped.split("?", 1)[0]
+
+    # Remove fragments
+    if "#" in stripped:
+        stripped = stripped.split("#", 1)[0]
+
+    # Remove protocol
     stripped = stripped.replace("https://", "").replace("http://", "")
     stripped = stripped.replace("//", "")
 
     if stripped.startswith("www."):
         stripped = stripped[4:]
 
+    # Skip .js links
+    if stripped.lower().endswith(".js"):
+        return ""
+
     return stripped
 
 
-def _truncate_text(text: str, max_chars: int = MAX_TEXT_CHARS) -> str:
-    if len(text) <= max_chars:
-        return text
-
-    truncated = text[:max_chars].rsplit(" ", 1)[0]
-    return f"{truncated}\n\n[Output truncated]"
+def _is_relevant(snippet: str, link: str, query: str) -> bool:
+    keywords = query.lower().split()
+    text = (snippet + " " + link).lower()
+    return any(kw in text for kw in keywords)
 
 
-def _format_search_result(summary: str, links: List[str]) -> str:
+def _format_search_result(pairs: list[tuple[str, str]]) -> str:
     parts: List[str] = []
-    summary = (summary or "").strip()
-    if summary:
-        parts.append(summary)
-
-    if links:
-        if parts:
-            parts.append("")  # blank line before links section
-        parts.append("**Links:**")
-        for link in links[:MAX_LINKS]:
+    for snippet, link in pairs:
+        snippet = snippet.strip()
+        link = link.strip()
+        if snippet:
+            parts.append(snippet)
+        if link:
             parts.append(f"- {link}")
-
+        if snippet or link:
+            parts.append("")  # blank line between pairs
     return "\n".join(parts).strip() or "No results found."
 
 
-def _search_duckduckgo_lite(query: str) -> Tuple[str, List[str]]:
+async def _search_duckduckgo_lite_async(query: str) -> List[Tuple[str, str]]:
     base_url = "https://lite.duckduckgo.com/lite/?q="
     url = f"{base_url}{quote(query)}"
-    try:
-        response = client.get(url)
-    except RequestError as err:
-        logger.error(f"HTTP error contacting DuckDuckGo lite: {err}")
-        return "", []
+    async with httpx.AsyncClient(
+        headers=CLIENT_HEADERS,
+        follow_redirects=True,
+        http2=True,
+        timeout=CLIENT_TIMEOUT,
+    ) as client:
+        try:
+            response = await client.get(url)
+        except RequestError as err:
+            logger.error(f"HTTP error contacting DuckDuckGo lite: {err}")
+            return []
 
     if response.status_code != 200:
         logger.warning(
-            f"DuckDuckGo lite returned status {response.status_code} for {url}"
+            f"DuckDuckGo lite returned status {response.status_code} for {query!r}"
         )
-        return "", []
+        return []
 
-    selector = Selector(text=response.text)
-    snippets = _extract_snippets(selector)
-    links = _extract_links(selector)
-
-    summary = _truncate_text(" ".join(snippets).strip()) if snippets else ""
-    return summary, links
+    selector = Selector(response.text)
+    pairs = _extract_snippet_link_pairs(selector)
+    return pairs

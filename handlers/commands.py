@@ -1,28 +1,31 @@
 import os
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import ContextTypes
+from telegram.constants import ParseMode
+from telegram.ext import CallbackQueryHandler, ContextTypes
 from telegramify_markdown import markdownify
 
 from config import LLM_PROVIDER
-from utils.auth import ADMIN_DENY_MESSAGE, is_admin
-from utils.history_state import (
-    get_prompt_history,
-    lookup_reply_context,
-    remember_prompt,
-)
 from handlers.messages import (
+    DEFAULT_MODE,
+    MODE_AUDIO,
+    _ensure_admin_for_message,
+    _merge_instructions_with_prompt,
     handle_message,
     respond_in_mode,
     send_chunked_message,
-    DEFAULT_MODE,
-    MODE_AUDIO,
-    _merge_instructions_with_prompt,
-    escape_markdown_v2,
+    send_markdown_message,
 )
 from services.gemini import clear_conversations, handle_user_message
+from utils.auth import ADMIN_DENY_MESSAGE, is_admin
+from utils.history_state import (
+    lookup_reply_context,
+    remember_prompt,
+)
 from utils.tool_directives import (
     ToolDirectiveError,
+)
+from utils.tool_directives import (
     derive_followup_tool_request as _derive_followup_tool_request,
 )
 
@@ -44,11 +47,9 @@ except ImportError:  # Optional dependency
     run_tool_direct = None
     translate_instruction_to_command = None
     translate_instruction_to_query = None
+
 from services.tts import synthesize_speech
 from utils.logger import log_user_action
-
-logger = __import__("logging").getLogger(__name__)
-
 
 MAX_MESSAGE_LENGTH = 4096
 MAX_TTS_CAPTION_LENGTH = 1024
@@ -56,6 +57,7 @@ MAX_TTS_CAPTION_LENGTH = 1024
 ADMIN_ONLY_MESSAGE = "available to the admins only."
 HELP_TEXT = (
     "Available commands:\n"
+    "/scrape <url> - Scrape a web page and return its title, description, main content, and links\n"
     "/start  - Start interaction with the bot\n"
     "/help   - Show this help message\n"
     "/text   - Switch to Text mode\n"
@@ -90,22 +92,95 @@ EVENT_LIMIT = 25
 TRIM_HISTORY_CHARS = 380
 TRIM_EVENT_EXTRA_CHARS = 120
 
+logger = __import__("logging").getLogger(__name__)
+
+
+# --- TLDR Callback Handler ---
+async def tldr_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    if data.startswith("show_tldr|"):
+        try:
+            _, tool_name, tldr = data.split("|", 2)
+        except Exception:
+            await query.edit_message_text("Sorry, could not extract TLDR.")
+            return
+        tldr_text = format_tldr_text(tldr, tool_name=tool_name)
+        await query.edit_message_text(tldr_text, parse_mode=ParseMode.MARKDOWN_V2)
+        log_user_action("tldr_show", update, f"tool: {tool_name}")
+    elif data == "skip_tldr":
+        await query.edit_message_text("Skipped TLDR.")
+        log_user_action("tldr_skip", update)
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-
-    if not _ensure_admin(update, update.message, context, markdown=True):
+    message = update.message
+    if not _ensure_admin(update, message, context, markdown=True):
         return
+    user_name = user.name if user and hasattr(user, "name") else "User"
+    if message and hasattr(message, "reply_markdown"):
+        await message.reply_markdown(
+            f"Welcome back, sir {user_name}!",
+        )
 
-    await update.message.reply_markdown(
-        f"Welcome back, sir {user.name}!",
+    log_user_action(
+        "User used /start", update, str(user.id) if user and hasattr(user, "id") else ""
     )
 
-    log_user_action("User used /start", update, user)
+    if hasattr(context, "user_data") and context.user_data is not None:
+        context.user_data["mode"] = DEFAULT_MODE
 
-    context.user_data["mode"] = DEFAULT_MODE
+    if message and hasattr(message, "reply_text"):
+        await message.reply_text(PROMPT_CHOOSE_MODE)
 
-    await update.message.reply_text(PROMPT_CHOOSE_MODE)
+
+async def scrape_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Scrape a web page and return its title, description, main content, and links."""
+    if not await _ensure_admin_for_message(update, update.message):
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: /scrape <url>")
+        return
+
+    url = context.args[0]
+    from tools.search_scrape import search_and_scrape
+
+    msg = await update.message.reply_text("Scraping, please wait...")
+
+    try:
+        from utils.tldr import extract_tldr_from_tool_result, send_tldr
+
+        result = await search_and_scrape(url)
+        tldr = extract_tldr_from_tool_result(result)
+        main_result = result[0] if isinstance(result, tuple) else result
+        # Optionally chunk if result is too long
+        if len(main_result) > MAX_MESSAGE_LENGTH:
+            await send_chunked_message(update.message, main_result)
+        else:
+            await send_markdown_message(update.message, main_result, escape=False)
+        if tldr:
+            keyboard = InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "Show TLDR",
+                            callback_data=f"show_tldr|Scrape|{msg.message_id}",
+                        ),
+                        InlineKeyboardButton("Skip", callback_data="skip_tldr"),
+                    ]
+                ]
+            )
+            await send_tldr(update.message, tldr, tool_name="Scrape")
+    except Exception as e:
+        await update.message.reply_text(f"Scraping failed: {e}")
+    finally:
+        try:
+            await msg.delete()
+        except Exception:
+            pass
 
 
 async def transcribe_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -144,7 +219,7 @@ async def handle_tts_request(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user_message = context.user_data.get("pending_transcript")
 
     if query.data == CALLBACK_SEND_AUDIO_TTS and user_message:
-
+        log_user_action("tts_send_audio", update)
         if len(user_message) > MAX_MESSAGE_LENGTH:
             await query.message.reply_text(PROMPT_TOO_LONG)
             return
@@ -180,7 +255,6 @@ async def handle_tts_request(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def handle_prompt_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     await set_mode(update, context, DEFAULT_MODE)
     query = update.callback_query
     await query.answer()
@@ -188,6 +262,7 @@ async def handle_prompt_decision(update: Update, context: ContextTypes.DEFAULT_T
     prompt = context.user_data.get("pending_prompt")
 
     if query.data == CALLBACK_SEND_PROMPT:
+        log_user_action("prompt_send", update)
         if prompt:
             mess = await query.edit_message_text("Sending prompt...")
 
@@ -201,6 +276,7 @@ async def handle_prompt_decision(update: Update, context: ContextTypes.DEFAULT_T
             await query.edit_message_text("No prompt to send.")
 
     elif query.data == CALLBACK_CANCEL:
+        log_user_action("prompt_cancel", update)
         if "pending_transcript" in context.user_data:
             del context.user_data["pending_transcript"]
             mess = await query.edit_message_text("Transcription cancelled.")
@@ -208,7 +284,11 @@ async def handle_prompt_decision(update: Update, context: ContextTypes.DEFAULT_T
                 PROMPT_SEND_TRANSCRIBED_AS_PROMPT,
                 reply_markup=InlineKeyboardMarkup(
                     [
-                        [InlineKeyboardButton("Yes", callback_data=CALLBACK_SEND_PROMPT)],
+                        [
+                            InlineKeyboardButton(
+                                "Yes", callback_data=CALLBACK_SEND_PROMPT
+                            )
+                        ],
                         [InlineKeyboardButton("No", callback_data=CALLBACK_CANCEL)],
                     ]
                 ),
@@ -251,11 +331,16 @@ async def set_text_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(HELP_TEXT)
+    await send_markdown_message(update.message, HELP_TEXT)
 
 
 async def tool_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not _ensure_admin(update, update.message, context, custom_message="Tool command is available to admins only."):
+    if not _ensure_admin(
+        update,
+        update.message,
+        context,
+        custom_message="Tool command is available to admins only.",
+    ):
         return
 
     if LLM_PROVIDER != "ollama" or not run_tool_direct or not resolve_tool_identifier:
@@ -331,21 +416,30 @@ async def tool_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Ensure tool_name and parameters are set before proceeding
     if not tool_name or parameters is None:
-        await update.message.reply_text("Tool name or parameters are not set. Cannot execute tool request.")
+        await update.message.reply_text(
+            "Tool name or parameters are not set. Cannot execute tool request."
+        )
         return
+
+    from utils.tldr import extract_tldr_from_tool_result, send_tldr
 
     result = run_tool_direct(tool_name, parameters)
     if result is None:
         await update.message.reply_text("Unknown or unavailable tool.")
         return
 
+    tldr = extract_tldr_from_tool_result(result)
+    main_result = result[0] if isinstance(result, tuple) else result
+
     await respond_in_mode(
         update.message,
         context,
         display_prompt,
-        result,
+        main_result,
         tool_info={"tool_name": tool_name, "parameters": parameters},
     )
+    if tldr:
+        await send_tldr(update.message, tldr, tool_name=tool_name)
 
 
 async def agent_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -361,7 +455,6 @@ async def agent_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context,
         tool_identifier="shell_agent",
         usage_message="Usage: /agent <instruction>",
-        missing_instruction_message="Please provide an instruction for the agent.",
         admin_only_message="Agent command is available to admins only.",
         backend_unavailable_message=(
             "Agent execution is only available when the Ollama backend is active."
@@ -378,18 +471,23 @@ async def web_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     and executed via the existing web_search tool.
     """
 
-    await _run_direct_instruction_tool(
-        update,
-        context,
-        tool_identifier="web_search",
-        usage_message="Usage: /web <instruction>",
-        missing_instruction_message="Please provide an instruction for web search.",
-        admin_only_message="Web command is available to admins only.",
-        backend_unavailable_message=(
-            "Web search is only available when the Ollama backend is active."
-        ),
-        unavailable_message="Web search tool is unavailable.",
-    )
+    from handlers.messages import send_markdown_message
+    from services.ollama import run_tool_direct_async
+    from utils.tldr import extract_tldr_from_tool_result, send_tldr
+
+    instructions = " ".join(context.args).strip()
+    if not instructions:
+        await update.message.reply_text("Usage: /web <instruction>")
+        return
+
+    parameters = {"query": instructions}
+    result = await run_tool_direct_async("web_search", parameters, tldr_separate=True)
+    tldr = extract_tldr_from_tool_result(result)
+    main_result = result[0] if isinstance(result, tuple) else result
+
+    await update.message.reply_text(main_result, parse_mode=None)
+    if tldr:
+        await send_tldr(update.message, tldr, tool_name="Web Search")
 
 
 async def cheat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -397,7 +495,12 @@ async def cheat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     Usage: /cheat <command>
     """
-    if not _ensure_admin(update, update.message, context, custom_message="Cheat lookup is available to admins only."):
+    if not _ensure_admin(
+        update,
+        update.message,
+        context,
+        custom_message="Cheat lookup is available to admins only.",
+    ):
         return
 
     if LLM_PROVIDER != "ollama" or not run_tool_direct:
@@ -425,7 +528,21 @@ async def cheat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"Error fetching cheat.sh: {e}")
         return
-    await respond_in_mode(update.message, context, cmd, result, tool_info={"tool_name": "cheat"})
+    await respond_in_mode(
+        update.message, context, cmd, result, tool_info={"tool_name": "cheat"}
+    )
+
+
+import asyncio
+
+
+async def _run_tool_async(tool_name, parameters):
+    # Use native async for web_search, otherwise offload to thread
+    if tool_name == "web_search":
+        from tools.web_search import web_search_async
+
+        return await web_search_async(parameters.get("query", ""))
+    return await asyncio.to_thread(run_tool_direct, tool_name, parameters)
 
 
 async def _run_direct_instruction_tool(
@@ -434,7 +551,6 @@ async def _run_direct_instruction_tool(
     *,
     tool_identifier: str,
     usage_message: str,
-    missing_instruction_message: str,
     admin_only_message: str,
     backend_unavailable_message: str,
     unavailable_message: str,
@@ -446,20 +562,22 @@ async def _run_direct_instruction_tool(
     prompt_history and respond_in_mode handling.
     """
 
-    if not _ensure_admin(update, update.message, context, custom_message=admin_only_message):
+    if not _ensure_admin(
+        update, update.message, context, custom_message=admin_only_message
+    ):
         return
 
-    if (
-        LLM_PROVIDER != "ollama"
-        or not run_tool_direct
-        or not resolve_tool_identifier
-    ):
+    if LLM_PROVIDER != "ollama" or not run_tool_direct or not resolve_tool_identifier:
         await update.message.reply_text(backend_unavailable_message)
         return
 
     instructions = " ".join(context.args).strip()
     # If no instructions, but replying to a message, use reply text
-    if not instructions and update.effective_message and update.effective_message.reply_to_message:
+    if (
+        not instructions
+        and update.effective_message
+        and update.effective_message.reply_to_message
+    ):
         reply_text = update.effective_message.reply_to_message.text or ""
         instructions = reply_text.strip()
     if not instructions:
@@ -470,6 +588,7 @@ async def _run_direct_instruction_tool(
     derived_followup = None
     display_prompt = instructions
     tool_display_info = ""
+    tool_request_message = None
     tool_name = None
     parameters = None
 
@@ -514,9 +633,6 @@ async def _run_direct_instruction_tool(
     else:
         tool_name = None
 
-
-
-
     # Exclusive: if reply is to shell_agent, only run refinement logic and skip fallback
     # Always trigger shell agent refinement for any reply to a shell_agent tool message
     if message and message.reply_to_message:
@@ -528,10 +644,18 @@ async def _run_direct_instruction_tool(
                 prev_command = tool_metadata["parameters"]["prompt"].strip()
         if not prev_command and isinstance(original_prompt, str):
             prev_command = original_prompt.strip()
-        if tool_metadata and tool_metadata.get("tool_name") == "shell_agent" and prev_command:
+        if (
+            tool_metadata
+            and tool_metadata.get("tool_name") == "shell_agent"
+            and prev_command
+        ):
             instructions_stripped = instructions.strip()
             # Prepend new instruction to previous command for iterative refinement
-            merged_prompt = f"{instructions_stripped}\n\n{prev_command}" if instructions_stripped else prev_command
+            merged_prompt = (
+                f"{instructions_stripped}\n\n{prev_command}"
+                if instructions_stripped
+                else prev_command
+            )
             llm_input = (
                 f"Refine the previous shell command to match this new instruction. "
                 f"Previous command: {prev_command}\n"
@@ -564,7 +688,7 @@ async def _run_direct_instruction_tool(
                 return
             if not parameters:
                 parameters = {}
-            result = run_tool_direct(tool_name, parameters)
+            result = await _run_tool_async(tool_name, parameters)
             if result is None:
                 await update.message.reply_text(unavailable_message)
                 return
@@ -575,12 +699,20 @@ async def _run_direct_instruction_tool(
                 result,
                 tool_info={"tool_name": tool_name, "parameters": parameters},
             )
+            # Delete the tool request message (if we previously sent one)
+            if tool_request_message:
+                try:
+                    await tool_request_message.delete()
+                except Exception as e:
+                    logger.debug(f"Failed to delete tool request message: {e}")
             return
 
     # Fallback: normal tool invocation if not a shell_agent reply
     if not derived_followup:
         try:
-            tool_name, parameters = _resolve_tool_invocation(tool_identifier, instructions)
+            tool_name, parameters = _resolve_tool_invocation(
+                tool_identifier, instructions
+            )
         except ToolDirectiveError as directive_err:
             await update.message.reply_text(str(directive_err))
             return
@@ -593,16 +725,27 @@ async def _run_direct_instruction_tool(
 
         # Compose tool display info for user
         if tool_name == "web_search":
-            tool_display_info = f"[TOOL REQUEST]\nTool: web_search\nQuery: {parameters.get('query','')}"
+            tool_display_info = f"[TOOL REQUEST]\nTool: web_search\nQuery: {parameters.get('query', '')}"
         elif tool_name == "shell_agent":
-            tool_display_info = f"[TOOL REQUEST]\nTool: shell_agent\nPrompt: {parameters.get('prompt','')}"
+            tool_display_info = f"[TOOL REQUEST]\nTool: shell_agent\nPrompt: {parameters.get('prompt', '')}"
         elif tool_name == "search_scrape":
-            tool_display_info = f"[TOOL REQUEST]\nTool: search_scrape\nQuery: {parameters.get('query','')}"
+            tool_display_info = f"[TOOL REQUEST]\nTool: search_scrape\nQuery: {parameters.get('query', '')}"
         else:
-            tool_display_info = f"[TOOL REQUEST]\nTool: {tool_name}\nParameters: {parameters}"
+            tool_display_info = (
+                f"[TOOL REQUEST]\nTool: {tool_name}\nParameters: {parameters}"
+            )
+
+        # append loading.... to tool_display_info
+        tool_display_info += "\nLoading..."
 
         if tool_display_info:
-            await update.message.reply_text(tool_display_info)
+            try:
+                tool_request_message = await update.message.reply_text(
+                    tool_display_info
+                )
+            except Exception as e:
+                logger.debug(f"Failed to send tool request message: {e}")
+                tool_request_message = None
 
     message = update.effective_message
     remember_prompt(context, message, display_prompt)
@@ -613,7 +756,7 @@ async def _run_direct_instruction_tool(
         return
     if not parameters:
         parameters = {}
-    result = run_tool_direct(tool_name, parameters)
+    result = await _run_tool_async(tool_name, parameters)
     if result is None:
         await update.message.reply_text(unavailable_message)
         return
@@ -625,6 +768,12 @@ async def _run_direct_instruction_tool(
         result,
         tool_info={"tool_name": tool_name, "parameters": parameters},
     )
+    # Delete the tool request message once the response is sent, if it exists
+    if tool_request_message:
+        try:
+            await tool_request_message.delete()
+        except Exception as e:
+            logger.debug(f"Failed to delete tool request message: {e}")
 
 
 async def clear_user_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -644,24 +793,51 @@ async def clear_user_history(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
 
 
+# --- DB history integration ---
+try:
+    from db.history import save_message, get_history
+except ImportError:
+    save_message = None
+    get_history = None
+
+# Patch: Save every message to DB (user and assistant)
+# You should call this in your message/command handlers, e.g. after receiving or sending a message.
+# Example for user message:
+# save_message(chat_id, user_id, 'user', user_message)
+# Example for assistant reply:
+# save_message(chat_id, user_id, 'assistant', bot_reply)
+
+# Patch: Use DB for /history if available
 async def show_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not _ensure_admin(update, update.message, context, custom_message="History is available to the admin only."):
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id if update.effective_user else None
+    if not _ensure_admin(
+        update,
+        update.message,
+        context,
+        custom_message="History is available to the admin only.",
+    ):
         return
 
+    if get_history:
+        entries = get_history(chat_id, limit=20)
+        if not entries:
+            await update.message.reply_text("No conversation history recorded yet.")
+            return
+        formatted = "\n".join(f"[{role}] {content}" for role, content, ts in reversed(entries))
+        await send_chunked_message(update.message, formatted, parse_mode=None)
+        return
+    # fallback to old logic if DB not available
     if LLM_PROVIDER != "ollama" or not get_recent_history:
         await update.message.reply_text(
             "History inspection only works when Ollama is active."
         )
         return
-
-    entries = get_recent_history(limit=HISTORY_LIMIT)
+    entries = get_recent_history(limit=20)
     if not entries:
         await update.message.reply_text("No conversation history recorded yet.")
         return
-
     formatted = "\n".join(_format_history_entry(entry) for entry in entries)
-    # History entries may contain arbitrary characters that break MarkdownV2;
-    # send them as plain text.
     await send_chunked_message(update.message, formatted, parse_mode=None)
 
 
@@ -716,7 +892,6 @@ def _resolve_tool_invocation(tool_identifier: str, args_text: str):
 
     if not args_text:
         raise ToolDirectiveError("Provide the arguments needed for this tool call.")
-
 
     value = args_text
     if param_name == "prompt" and translate_instruction_to_command:
@@ -791,7 +966,8 @@ def _format_event_entry(event: dict) -> str:
 
     if extras:
         extra_text = " | ".join(
-            f"{key}={_trim(str(value), TRIM_EVENT_EXTRA_CHARS)}" for key, value in extras.items()
+            f"{key}={_trim(str(value), TRIM_EVENT_EXTRA_CHARS)}"
+            for key, value in extras.items()
         )
         return f"{timestamp} [{kind}] {message} | {extra_text}"
 

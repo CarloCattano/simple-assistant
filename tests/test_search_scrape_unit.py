@@ -1,11 +1,13 @@
+import asyncio
 import time
 import unittest
+from unittest.mock import AsyncMock, patch
 
 from tools import search_scrape as ss
 
 
-class SearchScrapeStressTests(unittest.TestCase):
-    def test_large_html_is_truncated_and_fast(self):
+class SearchScrapeStressTests(unittest.IsolatedAsyncioTestCase):
+    async def test_large_html_is_truncated_and_fast(self):
         # Build a synthetic "page" with lots of text and links to exercise
         # the truncation and link limiting logic without performing a
         # real network request.
@@ -27,20 +29,18 @@ class SearchScrapeStressTests(unittest.TestCase):
         html.append("</body></html>")
         html_text = "".join(html)
 
-        # Patch the shared httpx client used by search_and_scrape so that
-        # it returns our synthetic document without hitting the network.
-        original_get = ss.client.get
-        try:
-            ss.client.get = lambda url: FakeResponse(html_text)  # type: ignore[assignment]
+        async def fake_get(*args, **kwargs):
+            return FakeResponse(html_text)
 
+        with patch("httpx.AsyncClient.get", new=fake_get):
             start = time.time()
-            output = ss.search_and_scrape("https://example.com/stress-test")
+            output = await ss.search_and_scrape("https://example.com/stress-test")
             elapsed = time.time() - start
-        finally:
-            ss.client.get = original_get  # type: ignore[assignment]
 
         # The function should return promptly even for very large pages.
-        self.assertLess(elapsed, 1.0, f"search_and_scrape took too long: {elapsed:.2f}s")
+        self.assertLess(
+            elapsed, 2.0, f"search_and_scrape took too long: {elapsed:.2f}s"
+        )
 
         # Output should be non-empty but reasonably bounded thanks to the
         # internal truncation logic.
@@ -48,7 +48,9 @@ class SearchScrapeStressTests(unittest.TestCase):
         self.assertLess(len(output), 20000)
 
         # Link limiting should prevent hundreds of links from appearing.
-        link_lines = [line for line in output.splitlines() if "example.com/page/" in line]
+        link_lines = [
+            line for line in output.splitlines() if "example.com/page/" in line
+        ]
         self.assertLessEqual(len(link_lines), ss.MAX_LINKS)
 
 

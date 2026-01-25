@@ -8,7 +8,6 @@ import unittest
 from pathlib import Path
 from typing import Optional
 
-
 DEFAULT_PATTERN = "test*.py"
 
 
@@ -86,16 +85,18 @@ class ColoredTextTestRunner(unittest.TextTestRunner):
         super().__init__(*args, **kwargs)
 
     def _makeResult(self):  # type: ignore[override]
-        return self.resultclass(
-            self.stream, self.descriptions, self.verbosity, self._enable_color
-        )
+        return self.resultclass(self.stream, self.descriptions, self.verbosity)
 
 
-def run_all_tests(pattern: str = DEFAULT_PATTERN, enable_color: Optional[bool] = None) -> int:
+def run_all_tests(
+    pattern: str = DEFAULT_PATTERN, enable_color: Optional[bool] = None
+) -> int:
     """Discover and execute tests, returning an appropriate exit code."""
     workspace = Path(__file__).resolve().parent
     tests_dir = workspace / "tests"
-    suite = unittest.defaultTestLoader.discover(start_dir=str(tests_dir), pattern=pattern)
+    suite = unittest.defaultTestLoader.discover(
+        start_dir=str(tests_dir), pattern=pattern
+    )
 
     runner = ColoredTextTestRunner(verbosity=2, enable_color=enable_color)
     result = runner.run(suite)

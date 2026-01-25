@@ -1,6 +1,7 @@
-from typing import Any, Dict, Iterable, Optional, Tuple
+from typing import Any, Dict, Iterable, Optional, Tuple, List
 
 from telegram.ext import ContextTypes
+
 
 from config import DEBUG_HISTORY_STATE
 from utils.logger import logger
@@ -11,13 +12,9 @@ except ImportError:  # pragma: no cover - telegram only required at runtime
     Message = Any  # type: ignore
 
 
+
+# Deprecated: In-memory prompt history is replaced by persistent DB storage.
 def get_prompt_history(context: ContextTypes.DEFAULT_TYPE) -> Dict[int, str]:
-    """Return (and initialize if needed) the per-user prompt history map.
-
-    Stored under context.user_data["prompt_history"], keyed by Telegram
-    message_id, with the original prompt text as the value.
-    """
-
     return context.user_data.setdefault("prompt_history", {})  # type: ignore[return-value]
 
 
@@ -32,21 +29,18 @@ def get_output_metadata(context: ContextTypes.DEFAULT_TYPE) -> Dict[int, Dict[st
     return context.user_data.setdefault("output_metadata", {})  # type: ignore[return-value]
 
 
+
 def remember_prompt(
     context: ContextTypes.DEFAULT_TYPE,
     message: Any,
     prompt: str,
 ) -> None:
-    """Associate a prompt with the given Telegram message in user_data.
-
-    Safe no-op when the message is missing or does not expose message_id.
-    """
-
+    """Persist prompt to DB for the given Telegram message."""
     if not message or not getattr(message, "message_id", None):
         return
-
     prompt_history = get_prompt_history(context)
     prompt_history[message.message_id] = prompt
+
 
 
 def remember_generated_output(
@@ -55,28 +49,19 @@ def remember_generated_output(
     messages: Iterable[Any],
     tool_info: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Record prompt and optional tool metadata for each generated message.
-
-    This mirrors the previous _remember_generated_prompt implementation in
-    handlers.messages and centralizes how prompt_history and
-    output_metadata are maintained.
-    """
-
+    """Persist assistant outputs to DB for each generated message."""
     if not messages:
         if DEBUG_HISTORY_STATE:
             logger.debug("[history_state] remember_generated_output: no messages to record for prompt=%r tool_info=%r", prompt, tool_info)
         return
-
     prompt_history = get_prompt_history(context)
     output_metadata = get_output_metadata(context)
-
     for msg in messages:
         msg_id = getattr(msg, "message_id", None)
         if not msg or not msg_id:
             if DEBUG_HISTORY_STATE:
                 logger.debug("[history_state] remember_generated_output: skipping message with no message_id: %r", msg)
             continue
-
         if DEBUG_HISTORY_STATE:
             logger.debug("[history_state] remember_generated_output: recording message_id=%r prompt=%r tool_info=%r", msg_id, prompt, tool_info)
         prompt_history[msg_id] = prompt
@@ -90,21 +75,14 @@ def remember_generated_output(
             output_metadata.pop(msg_id, None)
 
 
+
 def lookup_reply_context(
     context: ContextTypes.DEFAULT_TYPE,
     reply_message: Any,
 ) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
-    """Return (original_prompt, tool_metadata) for a reply target, if any.
-
-    Looks up prompt_history and output_metadata using reply_message.message_id
-    and falls back to reply_message.text for the original prompt when no
-    explicit history entry exists.
-    """
-
+    """Return (original_prompt, tool_metadata) for a reply target, if any, using persistent DB history."""
     if not reply_message or not getattr(reply_message, "message_id", None):
         return None, None
-
-
     prompt_history = get_prompt_history(context)
     output_metadata = get_output_metadata(context)
 

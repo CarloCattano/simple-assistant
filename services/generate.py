@@ -6,9 +6,11 @@ LLM_PROVIDER = "ollama"
 GEMINI_SOURCE = "gemini"
 OLLAMA_SOURCE = "ollama"
 
+
 def load_ollama_generator() -> Optional[Callable[..., str]]:
     try:
         import services.ollama
+
         ollama_generator = services.ollama.generate_content
     except ImportError as e:
         logger.error("Ollama service is not available: %s", e)
@@ -17,8 +19,8 @@ def load_ollama_generator() -> Optional[Callable[..., str]]:
 
 
 def load_gemini_generator() -> Optional[Callable[..., str]]:
-
     import services.gemini
+
     try:
         gemini_generator = services.gemini.generate_content
         return gemini_generator
@@ -33,6 +35,7 @@ def generate_from_gemini(prompt: str) -> str:
         return gemini_generator(prompt)
     logger.error("Failed to load Gemini generator")
     return "Failed to load Gemini generator"
+
 
 def generate_content(prompt: str, source: Optional[str] = LLM_PROVIDER) -> str:
     """
@@ -58,9 +61,8 @@ def generate_content(prompt: str, source: Optional[str] = LLM_PROVIDER) -> str:
                 return ollama_generator(prompt)
             else:
                 logger.error("Failed to load Ollama generator")
-                return f"Failed to load Ollama generator"
+                return "Failed to load Ollama generator"
         except Exception as e:
             logger.error("Error generating content from Ollama: %s", e)
             return f"Error from Ollama: {e}"
     return f"Unknown source: {provider or 'unspecified'}"
-

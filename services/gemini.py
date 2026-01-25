@@ -7,7 +7,6 @@ import requests
 from config import GEMINI_KEY, SYSTEM_PROMPT
 from utils.logger import RED, RST
 
-
 MODEL_NAME = "gemini-1.5-flash-latest"
 API_URL = (
     f"https://generativelanguage.googleapis.com/v1beta/models/"
@@ -24,7 +23,9 @@ def save_conversations():
     global user_conversations
     if len(user_conversations) > MAX_CONVERSATIONS:
         print(f"{RED}Trimming logs{RST} ")
-        keys_to_remove = list(user_conversations.keys())[: len(user_conversations) - TRIM_TO]
+        keys_to_remove = list(user_conversations.keys())[
+            : len(user_conversations) - TRIM_TO
+        ]
         for key in keys_to_remove:
             del user_conversations[key]
 
@@ -77,13 +78,13 @@ def handle_user_message(user_id, message_text):
     return reply
 
 
-def generate_content(prompt: str, history: list = None) -> str:
+def generate_content(prompt: str, history: list = []) -> str:
     """
     prompt: Current user message
     history: Optional previous messages (each with 'role' and 'parts')
     """
     # Start from history if exists, otherwise empty list
-    contents = history[:] if history else []
+    contents = history[:]
 
     # Add current user message
     contents.append({"role": "user", "parts": [{"text": prompt}]})

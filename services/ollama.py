@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import re
@@ -29,7 +30,7 @@ from utils.command_guard import (
     get_last_sanitize_error,
     sanitize_command,
 )
-from utils.logger import logger
+from utils.logger import RED, RST, logger
 
 if hasattr(_ollama_chat, "chat"):
     chat = _ollama_chat.chat
@@ -157,7 +158,6 @@ def generate_content(prompt: str) -> str | tuple[str, str | None]:
             "chat_request",
             {
                 "messages": _redact_system_content_in_messages(messages),
-                "tools": list(available_functions.keys()),
             },
         )
 
@@ -172,7 +172,6 @@ def generate_content(prompt: str) -> str | tuple[str, str | None]:
             keep_alive=0,
             tools=tool_callables,
         )
-        # Only log the assistant's message content and avoid logging null fields
         response_message_content = None
         try:
             response_message_content = getattr(response.message, "content", None)
@@ -224,7 +223,9 @@ def generate_content(prompt: str) -> str | tuple[str, str | None]:
                     )
 
         reply = response.message.content or ""
+        reply = escape_entities(reply)
         history.append({"role": "assistant", "content": reply})
+
         _record_event("assistant", reply)
         _debug(
             "assistant_reply",
@@ -238,6 +239,14 @@ def generate_content(prompt: str) -> str | tuple[str, str | None]:
 
     except Exception as e:
         return f"Error calling Ollama API: {e}"
+
+
+def escape_entities(text: str) -> str:
+    # a list of entities to escape
+    entities = ["!", "="]
+    for entity in entities:
+        text = text.replace(entity, f" {entity}")
+    return text
 
 
 def tldr_tool_output(tool_name: str, output: str) -> str:
@@ -380,6 +389,35 @@ def call_tool_with_tldr(
             )
             working_arguments["prompt"] = new_command
 
+        # After max retries, if still failed, use cheat to refine
+        if isinstance(last_output, dict) and last_output.get("exit_code") not in (
+            0,
+            None,
+        ):
+            command_name = last_output.get("command", "").split()[0]
+            if command_name:
+                try:
+                    cheat_result = run_tool_direct("cheat", {"command": command_name})
+                    if cheat_result:
+                        context_instruction = (
+                            f"{RED}Previous command failed:{RST} {last_output.get('command')}\n"
+                            f"{RED}Error: {last_output.get('stderr')}\n"
+                            f"{RST}Cheat info: {cheat_result}\n"
+                            f"Note: The cheat info contains example variables (e.g., './folder'). Replace them with appropriate values from the original instruction.\n"
+                            f"Please provide a corrected command for: {arguments.get('prompt', '')}"
+                        )
+                        new_command = translate_instruction_to_command(
+                            context_instruction
+                        )
+                        if new_command and new_command != last_output.get("command"):
+                            logger.info(
+                                f"Cheat-assisted retry: refining to {new_command!r}"
+                            )
+                            working_arguments["prompt"] = new_command
+                            last_output = tool_callable(**working_arguments)
+                except Exception as cheat_err:
+                    logger.error(f"Error in cheat-assisted retry: {cheat_err}")
+
         raw_output = last_output
     else:
         raw_output = tool_callable(**working_arguments)
@@ -399,8 +437,6 @@ def call_tool_with_tldr(
     )
 
     history.append({"role": "tool", "name": tool_name, "content": truncated_text})
-
-    trimmed_for_log = _truncate_event_text(raw_text)
 
     _record_event(
         "tool_call",
@@ -575,6 +611,39 @@ async def call_tool_with_tldr_async(
             )
             working_arguments["prompt"] = new_command
 
+        # After max retries, if still failed, use cheat to refine
+        if isinstance(last_output, dict) and last_output.get("exit_code") not in (
+            0,
+            None,
+        ):
+            command_name = last_output.get("command", "").split()[0]
+            if command_name:
+                try:
+                    cheat_result = await asyncio.to_thread(
+                        run_tool_direct, "cheat", {"command": command_name}
+                    )
+                    if cheat_result:
+                        context_instruction = (
+                            f"Previous command failed: {last_output.get('command')}\n"
+                            f"Error: {last_output.get('stderr')}\n"
+                            f"Cheat info: {cheat_result}\n"
+                            f"Note: The cheat info contains example variables (e.g., './folder'). Replace them with appropriate values from the original instruction.\n"
+                            f"Please provide a corrected command for: {arguments.get('prompt', '')}"
+                        )
+                        new_command = await asyncio.to_thread(
+                            translate_instruction_to_command, context_instruction
+                        )
+                        if new_command and new_command != last_output.get("command"):
+                            logger.info(
+                                f"Cheat-assisted retry: refining to {new_command!r}"
+                            )
+                            working_arguments["prompt"] = new_command
+                            last_output = await asyncio.to_thread(
+                                tool_callable, **working_arguments
+                            )
+                except Exception as cheat_err:
+                    logger.error(f"Error in cheat-assisted retry: {cheat_err}")
+
         raw_output = last_output
     else:
         raw_output = await asyncio.to_thread(tool_callable, **working_arguments)
@@ -593,8 +662,6 @@ async def call_tool_with_tldr_async(
     )
 
     history.append({"role": "tool", "name": tool_name, "content": truncated_text})
-
-    trimmed_for_log = _truncate_event_text(raw_text)
 
     _record_event(
         "tool_call",
@@ -762,9 +829,6 @@ def _trim_history(history: List[Dict[str, str]]) -> None:
     system = history[0:1]
     recent = history[-(MAX_HISTORY_LENGTH - 1) :]
     history[:] = system + recent
-
-
-import asyncio
 
 
 def run_tool_direct(

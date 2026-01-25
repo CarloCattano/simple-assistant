@@ -14,14 +14,13 @@ from utils.command_guard import (
     get_last_sanitize_error,
     sanitize_command,
 )
-from utils.logger import logger
+from utils.logger import debug_payload, logger
 
 # COMMAND_TRANSLATOR_SYSTEM_PROMPT, QUERY_TRANSLATOR_SYSTEM_PROMPT and MODEL_NAME
 # are imported from services.ollama_shared
 
 _last_command_translation_error: Optional[str] = None
 
-from utils.logger import debug_payload
 
 _debug = (
     lambda *args, **kwargs: debug_payload(*args, **kwargs)

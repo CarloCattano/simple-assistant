@@ -11,76 +11,20 @@ from handlers.messages import (
     MODE_AUDIO,
     _ensure_admin_for_message,
     _merge_instructions_with_prompt,
-    escape_markdown_v2,
     handle_message,
     respond_in_mode,
     send_chunked_message,
     send_markdown_message,
 )
 from services.gemini import clear_conversations, handle_user_message
-
-# ensure admin
 from utils.auth import ADMIN_DENY_MESSAGE, is_admin
 from utils.history_state import (
     lookup_reply_context,
     remember_prompt,
 )
-from utils.tldr import extract_tldr_from_tool_result, format_tldr_text, send_tldr
 from utils.tool_directives import (
     ToolDirectiveError,
 )
-
-
-# --- TLDR Callback Handler ---
-async def tldr_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    if data.startswith("show_tldr|"):
-        try:
-            _, tool_name, tldr = data.split("|", 2)
-        except Exception:
-            await query.edit_message_text("Sorry, could not extract TLDR.")
-            return
-        tldr_text = format_tldr_text(tldr, tool_name=tool_name)
-        await query.edit_message_text(tldr_text, parse_mode=ParseMode.MARKDOWN_V2)
-    elif data == "skip_tldr":
-        await query.edit_message_text("Skipped TLDR.")
-
-
-# --- TLDR Callback Handler ---
-async def tldr_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    if data.startswith("show_tldr|"):
-        try:
-            _, tool_name, _ = data.split("|", 2)
-        except Exception:
-            await query.edit_message_text("Sorry, could not extract TLDR.")
-            return
-        # Use reply_to_message.text for tool output
-        if (
-            not query.message
-            or not query.message.reply_to_message
-            or not query.message.reply_to_message.text
-        ):
-            await query.edit_message_text("Could not retrieve original tool output.")
-            return
-        tool_output = query.message.reply_to_message.text
-        from utils.tldr import extract_tldr_from_tool_result, format_tldr_text
-
-        tldr = extract_tldr_from_tool_result((tool_output, None))
-        if not tldr:
-            await query.edit_message_text("No TLDR available.")
-            return
-        # Always escape TLDR for MarkdownV2
-        tldr_text = format_tldr_text(tldr, tool_name=tool_name, markdown=True)
-        await query.edit_message_text(tldr_text, parse_mode=ParseMode.MARKDOWN_V2)
-    elif data == "skip_tldr":
-        await query.edit_message_text("Skipped TLDR.")
-
-
 from utils.tool_directives import (
     derive_followup_tool_request as _derive_followup_tool_request,
 )
@@ -103,11 +47,9 @@ except ImportError:  # Optional dependency
     run_tool_direct = None
     translate_instruction_to_command = None
     translate_instruction_to_query = None
+
 from services.tts import synthesize_speech
 from utils.logger import log_user_action
-
-logger = __import__("logging").getLogger(__name__)
-
 
 MAX_MESSAGE_LENGTH = 4096
 MAX_TTS_CAPTION_LENGTH = 1024
@@ -149,6 +91,27 @@ EVENT_LIMIT = 25
 
 TRIM_HISTORY_CHARS = 380
 TRIM_EVENT_EXTRA_CHARS = 120
+
+logger = __import__("logging").getLogger(__name__)
+
+
+# --- TLDR Callback Handler ---
+async def tldr_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    if data.startswith("show_tldr|"):
+        try:
+            _, tool_name, tldr = data.split("|", 2)
+        except Exception:
+            await query.edit_message_text("Sorry, could not extract TLDR.")
+            return
+        tldr_text = format_tldr_text(tldr, tool_name=tool_name)
+        await query.edit_message_text(tldr_text, parse_mode=ParseMode.MARKDOWN_V2)
+        log_user_action("tldr_show", update, f"tool: {tool_name}")
+    elif data == "skip_tldr":
+        await query.edit_message_text("Skipped TLDR.")
+        log_user_action("tldr_skip", update)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -256,6 +219,7 @@ async def handle_tts_request(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user_message = context.user_data.get("pending_transcript")
 
     if query.data == CALLBACK_SEND_AUDIO_TTS and user_message:
+        log_user_action("tts_send_audio", update)
         if len(user_message) > MAX_MESSAGE_LENGTH:
             await query.message.reply_text(PROMPT_TOO_LONG)
             return
@@ -298,6 +262,7 @@ async def handle_prompt_decision(update: Update, context: ContextTypes.DEFAULT_T
     prompt = context.user_data.get("pending_prompt")
 
     if query.data == CALLBACK_SEND_PROMPT:
+        log_user_action("prompt_send", update)
         if prompt:
             mess = await query.edit_message_text("Sending prompt...")
 
@@ -311,6 +276,7 @@ async def handle_prompt_decision(update: Update, context: ContextTypes.DEFAULT_T
             await query.edit_message_text("No prompt to send.")
 
     elif query.data == CALLBACK_CANCEL:
+        log_user_action("prompt_cancel", update)
         if "pending_transcript" in context.user_data:
             del context.user_data["pending_transcript"]
             mess = await query.edit_message_text("Transcription cancelled.")
@@ -489,7 +455,6 @@ async def agent_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context,
         tool_identifier="shell_agent",
         usage_message="Usage: /agent <instruction>",
-        missing_instruction_message="Please provide an instruction for the agent.",
         admin_only_message="Agent command is available to admins only.",
         backend_unavailable_message=(
             "Agent execution is only available when the Ollama backend is active."
@@ -516,13 +481,11 @@ async def web_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     parameters = {"query": instructions}
-    result = await run_tool_direct_async(
-        "web_search", parameters, tldr_separate=True
-    )
+    result = await run_tool_direct_async("web_search", parameters, tldr_separate=True)
     tldr = extract_tldr_from_tool_result(result)
     main_result = result[0] if isinstance(result, tuple) else result
 
-    await send_markdown_message(update.message, main_result, escape=False)
+    await update.message.reply_text(main_result, parse_mode=None)
     if tldr:
         await send_tldr(update.message, tldr, tool_name="Web Search")
 
@@ -588,7 +551,6 @@ async def _run_direct_instruction_tool(
     *,
     tool_identifier: str,
     usage_message: str,
-    missing_instruction_message: str,
     admin_only_message: str,
     backend_unavailable_message: str,
     unavailable_message: str,
@@ -831,7 +793,24 @@ async def clear_user_history(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
 
 
+# --- DB history integration ---
+try:
+    from db.history import save_message, get_history
+except ImportError:
+    save_message = None
+    get_history = None
+
+# Patch: Save every message to DB (user and assistant)
+# You should call this in your message/command handlers, e.g. after receiving or sending a message.
+# Example for user message:
+# save_message(chat_id, user_id, 'user', user_message)
+# Example for assistant reply:
+# save_message(chat_id, user_id, 'assistant', bot_reply)
+
+# Patch: Use DB for /history if available
 async def show_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id if update.effective_user else None
     if not _ensure_admin(
         update,
         update.message,
@@ -840,20 +819,25 @@ async def show_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ):
         return
 
+    if get_history:
+        entries = get_history(chat_id, limit=20)
+        if not entries:
+            await update.message.reply_text("No conversation history recorded yet.")
+            return
+        formatted = "\n".join(f"[{role}] {content}" for role, content, ts in reversed(entries))
+        await send_chunked_message(update.message, formatted, parse_mode=None)
+        return
+    # fallback to old logic if DB not available
     if LLM_PROVIDER != "ollama" or not get_recent_history:
         await update.message.reply_text(
             "History inspection only works when Ollama is active."
         )
         return
-
-    entries = get_recent_history(limit=HISTORY_LIMIT)
+    entries = get_recent_history(limit=20)
     if not entries:
         await update.message.reply_text("No conversation history recorded yet.")
         return
-
     formatted = "\n".join(_format_history_entry(entry) for entry in entries)
-    # History entries may contain arbitrary characters that break MarkdownV2;
-    # send them as plain text.
     await send_chunked_message(update.message, formatted, parse_mode=None)
 
 

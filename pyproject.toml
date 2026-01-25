@@ -15,6 +15,7 @@ requests = "*"
 markdownify = "*"
 telegramify-markdown = "*"
 ollama = "*"
+psycopg2 = "*"
 
 [tool.poetry.group.dev.dependencies]
 watchgod = "*"            # for auto-reload

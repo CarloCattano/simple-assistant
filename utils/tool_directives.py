@@ -17,7 +17,8 @@ ALLOWED_SHELL_CMDS = (
     "jq", "kill", "ls", "lsblk", "lscpu", "mkdir", "mount", "mv", "netstat", "node", "npm","npm", "ping",
     "ping", "pip", "playerctl", "printenv", "ps", "pwd", "python", "python", "pip", "rg", "systemctl", 
     "sensors", "sensors", "chmod", "service", "sleep", "ss", "stat", "sudo", "systemctl", "tail", "sort",
-    "tail", "tar", "tar", "test", "top", "touch", "umount", "uname", "unzip", "uptime", "vmstat", "wget", "whoami", "zip", "zip", "unzip"
+    "traceroute","tail", "tar", "tar", "test","exit", "top", "touch", "umount", "uname", "unzip", "uptime", 
+    "vmstat", "wget", "whoami", "zip", "zip", "unzip"
 )
 
 try:  # Optional Ollama dependency
@@ -39,9 +40,6 @@ class ToolDirectiveError(Exception):
 
 
 def _normalize_tool_parameters(tool_name: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
-    if not isinstance(parameters, dict):
-        return parameters
-
     if (
         tool_name == "web_search"
         and translate_instruction_to_query

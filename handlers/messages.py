@@ -32,7 +32,6 @@ from utils.history_state import (
 from utils.logger import log_user_action, logger
 from utils.tool_directives import (
     REPROCESS_CONTROL_WORDS,
-    ToolDirectiveError,
 )
 from utils.tool_directives import (
     derive_followup_tool_request as _derive_followup_tool_request,
@@ -85,10 +84,12 @@ def escape_markdown_v2(text: str) -> str:
         ">",
         "#",
         "+",
+        "-",
         "=",
         "|",
         "{",
         "}",
+        ".",
         "!",
     ]
     for char in to_escape:
@@ -107,7 +108,7 @@ async def _safe_reply_text(target, text: str, parse_mode: Optional[str]):
         raise
 
 
-async def send_markdown_message(target, text: str, escape: bool = True):
+async def send_markdown_message(target, text: str, escape: bool = False):
     """
     Send a MarkdownV2 message with robust escaping and fallback to plain text.
     """
@@ -295,10 +296,11 @@ async def respond_in_mode(
             )
             sent_messages = []
             for msg in messages_to_send:
-                sent_msg = await _safe_reply_text(update_message, msg, "Markdown")
+                sent_msg = await _safe_reply_text(update_message, msg, "MarkdownV2")
                 sent_messages.append(sent_msg)
-
         else:
+            # Convert Markdown to MarkdownV2 for proper rendering
+            ai_output = markdownify(ai_output)
             sent_messages = await send_chunked_message(
                 update_message,
                 ai_output,
@@ -418,9 +420,6 @@ def _looks_like_shell_command(text: str) -> bool:
     return False
 
 
-import asyncio
-
-
 async def _run_tool_async(tool_name, parameters):
     # Offload to thread if run_tool_direct is blocking
     return await asyncio.to_thread(run_tool_direct, tool_name, parameters)
@@ -532,7 +531,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, *ar
         f"Received message from chat_id: {message.chat.id}, text: {message.text[:50]}..."
     )
 
-    prompt_history = get_prompt_history(context)
 
     user_text = _strip_command_prefix(message.text).strip()
 
@@ -569,8 +567,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, *ar
                     if generated_content is None:
                         await message.reply_text(PROMPT_UNKNOWN_TOOL, parse_mode=None)
                         return
-                    prompt_history = get_prompt_history(context)
-                    prompt_history[message.message_id] = display_prompt
                     await respond_in_mode(
                         message,
                         context,
@@ -607,6 +603,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, *ar
                 return
             user_text = _merge_instructions_with_prompt(instructions, original_prompt)
             reprocess_detail = f"reply_to_message_id={reply.message_id}"
+
+    prompt_history = get_prompt_history(context)
+    llm_prompt = user_text
 
     if not user_text:
         await message.reply_text(PROMPT_INVALID_TEXT)
@@ -658,14 +657,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, *ar
         await mess.edit_text(str(err))
         return
 
-    # Delete the "Reprocessing previous message..." placeholder after the answer arrives
     if reprocess_detail:
         try:
             await mess.delete()
         except Exception:
             pass
 
-    # Patch: If the LLM response contains a tool call in JSON, parse and execute it
     tool_call_match = re.match(
         r"~\{\s*\"name\":\s*\"(\w+)\",\s*\"parameters\":\s*(\{.*?\})\s*\}~",
         generated_content,

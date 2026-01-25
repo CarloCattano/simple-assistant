@@ -4,6 +4,11 @@ Unified TLDR (summary) extraction, formatting, and sending utilities for tools a
 
 from typing import Any, Callable, Optional
 
+try:
+    from telegramify_markdown import markdownify
+except ImportError:
+    markdownify = lambda x: x
+
 from handlers.messages import escape_markdown_v2, send_markdown_message
 
 # --- TLDR Extraction ---
@@ -47,7 +52,7 @@ def format_tldr_text(
     else:
         if tool_name:
             return f"{tool_name} TLDR:\n{tldr}"
-        return f"TLDR:\n{tldr}
+        return f"TLDR:\n{tldr}"
 
 
 # --- TLDR Sending ---
@@ -67,6 +72,8 @@ async def send_tldr(
     if not tldr:
         return None
     text = format_tldr_text(tldr, tool_name, markdown=markdown)
+    # Convert to MarkdownV2 for proper rendering
+    text = markdownify(text)
     if send_func:
         return await send_func(target, text, escape=escape)
     # Default to send_markdown_message

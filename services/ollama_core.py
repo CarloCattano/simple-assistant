@@ -21,7 +21,11 @@ from services.ollama_shared import (
     MAX_TOOL_OUTPUT_IN_HISTORY,
     MODEL_NAME,
 )
-from utils.logger import GREEN, RST, logger
+from utils.logger import GREEN, RST, debug_payload, logger
+
+# Event logging functions
+EVENT_LOG_LIMIT = 200
+MAX_EVENT_TEXT = 400
 
 if hasattr(_ollama_chat, "chat"):
     chat = _ollama_chat
@@ -38,9 +42,6 @@ user_histories: Dict[str, List[Dict[str, str]]] = {}
 # managed in services.ollama_shared
 
 OLLAMA_URL = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
-
-from utils.logger import debug_payload
-
 _debug = (
     lambda *args, **kwargs: debug_payload(*args, **kwargs)
     if DEBUG_OLLAMA or DEBUG_TOOL_DIRECTIVES
@@ -139,7 +140,6 @@ def generate_content(prompt: str) -> str | tuple[str, str | None]:
             "chat_request",
             {
                 "messages": _redact_system_content_in_messages(messages),
-                "tools": list(available_functions.keys()),
             },
         )
 
@@ -166,8 +166,6 @@ def generate_content(prompt: str) -> str | tuple[str, str | None]:
             keep_alive=0,
             tools=tool_defs,
         )
-        # Log only the assistant's message content to avoid recording full payloads
-        # and avoid including null fields in logs.
         response_message_content = None
         try:
             response_message_content = getattr(response.message, "content", None)
@@ -176,12 +174,10 @@ def generate_content(prompt: str) -> str | tuple[str, str | None]:
         log_payload: Dict[str, Any] = {}
         if response_message_content is not None:
             log_payload["message_content"] = response_message_content
-        # Only send a debug payload if there is at least one non-null field to avoid logging nulls
         if log_payload:
             _debug("chat_response", log_payload)
 
         if response.message.tool_calls:
-            # Add the assistant's message with tool calls to history for context
             assistant_message = {
                 "role": "assistant",
                 "content": response.message.content or "",
@@ -271,10 +267,6 @@ def generate_content(prompt: str) -> str | tuple[str, str | None]:
     except Exception as e:
         return f"Error calling Ollama API: {e}"
 
-
-# Event logging functions
-EVENT_LOG_LIMIT = 200
-MAX_EVENT_TEXT = 400
 
 _event_log: deque[Dict[str, Any]] = deque(maxlen=EVENT_LOG_LIMIT)
 

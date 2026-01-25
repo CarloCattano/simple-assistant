@@ -1,4 +1,5 @@
 import asyncio
+from posixpath import pardir
 from typing import List, Tuple
 from urllib.parse import quote
 
@@ -6,7 +7,6 @@ import httpx
 from httpx import RequestError
 from parsel import Selector
 
-from handlers.messages import escape_markdown_v2
 from utils.logger import logger
 
 MAX_TEXT_CHARS = 1500
@@ -26,7 +26,6 @@ def web_search(query: str) -> str:
     """
     Legacy sync wrapper for backward compatibility.
     """
-
     return asyncio.run(web_search_async(query))
 
 
@@ -44,7 +43,9 @@ async def web_search_async(query: str) -> str:
     # Prefer the first with results
     for pairs in results:
         if pairs:
-            return _format_search_result(pairs)
+            # Filter out irrelevant results
+            relevant_pairs = [p for p in pairs if _is_relevant(p[0], p[1], query)]
+            return _format_search_result(relevant_pairs)
     return _format_search_result([])
 
 
@@ -59,7 +60,7 @@ tool = {
 }
 
 
-async def _search_duckduckgo_async(query: str) -> Tuple[str, List[str]]:
+async def _search_duckduckgo_async(query: str) -> List[Tuple[str, str]]:
     base_url = "https://html.duckduckgo.com/html/?q="
     url = f"{base_url}{quote(query)}"
     async with httpx.AsyncClient(
@@ -72,13 +73,13 @@ async def _search_duckduckgo_async(query: str) -> Tuple[str, List[str]]:
             response = await client.get(url)
         except RequestError as err:
             logger.error(f"HTTP error contacting DuckDuckGo: {err}")
-            return "", []
+            return []
 
     if response.status_code != 200:
         logger.warning(
             f"DuckDuckGo returned status {response.status_code} for {query!r}"
         )
-        return "", []
+        return []
 
     selector = Selector(response.text)
     # ... rest of parsing logic ...
@@ -151,28 +152,10 @@ def _clean_link(link: str) -> str:
     return stripped
 
 
-def escape_markdown_v2_light(text: str) -> str:
-    text = text.replace("\\", r"\\")  #
-    text = text.replace(".", r"\.")
-    to_escape = [
-        "_",
-        "*",
-        "[",
-        "]",
-        "(",
-        ")",
-        "~",
-        ">",
-        "#",
-        "+",
-        "=",
-        "|",
-        "{",
-        "}",
-    ]
-    for char in to_escape:
-        text = text.replace(char, f"\\{char}")
-    return text
+def _is_relevant(snippet: str, link: str, query: str) -> bool:
+    keywords = query.lower().split()
+    text = (snippet + " " + link).lower()
+    return any(kw in text for kw in keywords)
 
 
 def _format_search_result(pairs: list[tuple[str, str]]) -> str:
@@ -181,15 +164,15 @@ def _format_search_result(pairs: list[tuple[str, str]]) -> str:
         snippet = snippet.strip()
         link = link.strip()
         if snippet:
-            parts.append(escape_markdown_v2(snippet))
+            parts.append(snippet)
         if link:
-            parts.append(f"- {escape_markdown_v2(link)}")
+            parts.append(f"- {link}")
         if snippet or link:
             parts.append("")  # blank line between pairs
     return "\n".join(parts).strip() or "No results found."
 
 
-async def _search_duckduckgo_lite_async(query: str) -> Tuple[str, List[str]]:
+async def _search_duckduckgo_lite_async(query: str) -> List[Tuple[str, str]]:
     base_url = "https://lite.duckduckgo.com/lite/?q="
     url = f"{base_url}{quote(query)}"
     async with httpx.AsyncClient(
@@ -202,13 +185,13 @@ async def _search_duckduckgo_lite_async(query: str) -> Tuple[str, List[str]]:
             response = await client.get(url)
         except RequestError as err:
             logger.error(f"HTTP error contacting DuckDuckGo lite: {err}")
-            return "", []
+            return []
 
     if response.status_code != 200:
         logger.warning(
             f"DuckDuckGo lite returned status {response.status_code} for {query!r}"
         )
-        return "", []
+        return []
 
     selector = Selector(response.text)
     pairs = _extract_snippet_link_pairs(selector)

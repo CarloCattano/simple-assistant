@@ -7,7 +7,7 @@ try:  # Optional at import time to keep tests and tools lightweight
 except ImportError:  # pragma: no cover - telegram is only required for the bot process
     Update = Any  # type: ignore
 
-from config import ADMIN_ID
+from config import ADMIN_ID, DEBUG_USER_ACTIONS
 
 RED = "\033[91m"
 GREEN = "\033[92m"
@@ -29,6 +29,9 @@ logger.setLevel(_level)
 
 
 def log_user_action(action: str, update: Update, extra: str = ""):
+    if not DEBUG_USER_ACTIONS:
+        return
+
     effective_user = update.effective_user
     effective_message = update.effective_message
 
@@ -48,25 +51,35 @@ def log_user_action(action: str, update: Update, extra: str = ""):
     if extra:
         log_entry += f" | Detail: {extra}\n --- \n"
 
-    colored_entry = f"{GREEN}{log_entry}{RST}" if str(user_id) == str(ADMIN_ID) else f"{RED}{log_entry}{RST}"
+    colored_entry = (
+        f"{GREEN}{log_entry}{RST}"
+        if str(user_id) == str(ADMIN_ID)
+        else f"{RED}{log_entry}{RST}"
+    )
 
     logger.warning(colored_entry)
+
 
 def error(msg: str):
     logger.error(msg)
 
+
 def info(msg: str):
     logger.info(msg)
+
 
 def warn(msg: str):
     logger.warning(msg)
 
+
 def debug(msg: str):
     logger.debug(msg)
 
+
 def debug_payload(label: str, payload: Any) -> None:
-    from logging import DEBUG, Logger
     import json
+    from logging import DEBUG, Logger
+
     log_instance = getattr(logger, "logger", None)
     if isinstance(log_instance, Logger):
         if not log_instance.isEnabledFor(DEBUG):

@@ -2,6 +2,10 @@
 
 Keep only small, import-safe values here (no heavy runtime imports).
 """
+
+from utils.tool_directives import ALLOWED_SHELL_CMDS
+
+
 MODEL_NAME = "llama3.2"
 
 MAX_HISTORY_LENGTH = 400
@@ -16,17 +20,22 @@ CONTENT_REPORTER_SCRIPT_PROMPT = (
 
 COMMAND_TRANSLATOR_SYSTEM_PROMPT = (
     "You convert natural language requests into a single Linux shell commands. "
+    "Never return a command that omits a key requirement from the user's request."
+    "- If you are unsure, respond with exit 1 "
+    "avoid very long output commands use a pipe to head ' command | head -n500' to limit output. "
+    "Do not just echo commands out back to the user.Run the actuall commands needed to fulfill the request. "
     "Use relative path for commands as a user would do. Add subtasks if needed with ; or &&. "
     "Avoid cd and commands that will cause an interactive shell to stall, you are not in an interactive shell. "
-    "Pipes and multiple commands on the same line are allowed though. "
-    "you can read json files with jq, jq '.' file.json or pipe into jq i.e cat file.json | jq '.' " 
-    "search with rg, download with curl or wget, extract archives with tar or unzip, and manipulate files with coreutils. "
+    "Pipes and multiple commands on the same line are allowed if needed. "
+    "you can read json files with jq, jq '.' file.json or pipe into jq i.e cat file.json | jq '.' "
+    "list files with ls, download with curl or wget, extract archives with tar or unzip, and manipulate files with coreutils. "
+    "use find for more complex searches, such as finding files modified within a specific time range or size range"
     "prefer rg over grep for searching text in files recursively ie rg 'search_term' ./folder "
     "Respond ONLY with the exact command, making sure any quotes are properly closed "
-    "(for example: echo \"Hello World\"). Always close every opening quote character; "
+    '(for example: echo "Hello World"). Always close every opening quote character; '
     "never leave a string unterminated. "
     "Do not add commentary, shell prompts, explanations, or additional lines. "
-    "Infer requests from trying allowed commands , i.e For requests about controlling music playback, prefer 'playerctl' subcommands like 'playerctl play', 'playerctl pause', 'playerctl next', or 'playerctl previous'. "
+    f"allowed commands: {ALLOWED_SHELL_CMDS}"
 )
 
 QUERY_TRANSLATOR_SYSTEM_PROMPT = (

@@ -1,4 +1,4 @@
-# Conversation History Database
+# Conversation History Database [ DRAFT ] [ ]
 
 This folder contains the schema and access code for storing Telegram bot conversation history in PostgreSQL using psycopg2.
 

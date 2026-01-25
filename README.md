@@ -30,14 +30,14 @@ This assistant supports context-aware interactions and reply-based tool flows:
 **Tip:** For best results, always reply directly to the relevant tool output or message you want to refine or extend.
 1. Copy `.env.template` to `.env` and fill in your `GEMINI_API_KEY`, `TELEGRAM_BOT_TOKEN`, and `ADMIN_ID`.
 2. Set `LLM_PROVIDER=gemini` or `LLM_PROVIDER=ollama` in `.env`.
-3. Install dependencies and run the bot:
+3. Install dependencies and run telegram-bot:
     ```bash
     poetry install
     poetry run python app.py
     ```
-4. To run tests:
+4. run tests:
     ```bash
-    ./run_tests.py
+     poetry run python run_tests.py
     ```
 
 ### Shell Agent Tool

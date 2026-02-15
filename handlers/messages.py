@@ -362,7 +362,8 @@ async def respond_in_mode(
                 await update_message.reply_text("Content generation failed.")
 
     # Output recording is now handled by history_manager
-    if not is_cheat_tool:
+    # Only trigger audio summary for explicit tool invocations, not regular user messages
+    if not is_cheat_tool and tool_info and tool_info.get("tool_name") not in (None, "", "shell_agent"):
         await maybe_send_tool_audio(update_message, context)
 
 

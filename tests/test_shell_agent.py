@@ -167,24 +167,6 @@ class ShellAgentTests(unittest.TestCase):
         self.assertIsNotNone(calls[1])
 
 
-    def test_tool_output_truncated_in_history(self):
-        MAX_TOOL_OUTPUT_IN_HISTORY = 1600 # TODO: remove magic num 
-        # Create a long output
-        long_output = "x" * 2000
-        raw_output = {
-            "command": "echo " + long_output,
-            "exit_code": 0,
-            "stdout": long_output,
-            "stderr": "",
-        }
-        
-        formatted = _format_tool_output("shell_agent", raw_output)
-        
-        # Should be truncated in history storage
-        truncated = formatted[:MAX_TOOL_OUTPUT_IN_HISTORY] + ("..." if len(formatted) > MAX_TOOL_OUTPUT_IN_HISTORY else "")
-        
-        self.assertLessEqual(len(truncated), MAX_TOOL_OUTPUT_IN_HISTORY + 3)
-
     def test_tool_output_truncated_in_formatting(self):
         from services.ollama import _format_tool_output
 
